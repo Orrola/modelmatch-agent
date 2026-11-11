@@ -1,0 +1,41 @@
+{
+  "fixture_kind": "synthetic_protocol_test_only",
+  "notice": "Anonymous synthetic protocol data. All benchmark values are null. NOT Artificial Analysis evaluations. Numeric prices/performance below are test inputs only.",
+  "pages": [
+    {
+      "tier": "free",
+      "intelligence_index_version": "mock-version",
+      "pagination": {"page": 1, "page_size": 1, "total_pages": 2, "has_more": true},
+      "data": [{
+        "id": "mock-model-a", "name": "Synthetic protocol A", "slug": "mock-a",
+        "model_creator": {"id": "mock-creator-a"},
+        "evaluations": {
+          "artificial_analysis_intelligence_index": null,
+          "artificial_analysis_finance_and_accounting_index": null,
+          "artificial_analysis_strategy_and_ops_index": null,
+          "artificial_analysis_legal_index": null,
+          "artificial_analysis_healthcare_and_medical_index": null,
+          "artificial_analysis_engineering_index": null,
+          "artificial_analysis_economics_index": null
+        },
+        "pricing": {"price_1m_input_tokens": 0, "price_1m_output_tokens": 2},
+        "performance": {"median_output_tokens_per_second": 30, "median_time_to_first_token_seconds": 1},
+        "performance_v3": {"mean_output_tokens_per_second": 40, "mean_time_to_first_token_seconds": 2}
+      }]
+    },
+    {
+      "tier": "free",
+      "intelligence_index_version": "mock-version",
+      "pagination": {"page": 2, "page_size": 1, "total_pages": 2, "has_more": false},
+      "data": [{
+        "id": "mock-model-b", "name": "Synthetic protocol B", "slug": "mock-b",
+        "model_creator": {"id": "mock-creator-b"},
+        "evaluations": {"artificial_analysis_intelligence_index": null},
+        "pricing": {"price_1m_input_tokens": null, "price_1m_output_tokens": "invalid-test-value"},
+        "performance": null,
+        "performance_v3": {"mean_output_tokens_per_second": null, "mean_time_to_first_token_seconds": null},
+        "second_page_only_field": true
+      }]
+    }
+  ]
+}

@@ -1,0 +1,49 @@
+# Virtual environment. uv recreates it from pyproject.toml + uv.lock.
+.venv/
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+
+# Local secrets. Commit .env.example instead, never .env.
+.env
+.env.*
+!.env.example
+
+# Local API snapshots, audit metadata, and dependency cache (not for redistribution).
+.cache/
+
+# Temporary internal specifications; runtime and tests must not depend on these.
+/docs/
+
+# Test, coverage and build artifacts.
+.pytest_cache/
+.coverage
+htmlcov/
+dist/
+build/
+*.egg-info/
+*.log
+
+# macOS
+.DS_Store
+
+# Local authentication and private key material, never fixtures or templates.
+application_default_credentials.json
+*credentials*.json
+*service-account*.json
+*service_account*.json
+*.pem
+*.key
+*.p12
+*.pfx
+.aws/
+.gcloud/
+.config/gcloud/
+
+# Generated browser reviews and temporary local output.
+screenshots/
+test-results/
+playwright-report/
+*.tmp
+*.temp

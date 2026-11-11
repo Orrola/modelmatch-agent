@@ -1,0 +1,41 @@
+{
+  "fixture_kind": "synthetic_protocol_test_only",
+  "notice": "PHASE 2A TEST INPUTS ONLY. Anonymous fictional models and synthetic numeric indices for completeness/selection assertions. NOT real AA evaluations or recommendations.",
+  "pages": [{
+    "tier": "free",
+    "intelligence_index_version": "synthetic-only",
+    "pagination": {"page": 1, "has_more": false},
+    "data": [
+      {
+        "id": "synthetic-finance", "name": "Fictional Finance", "model_creator": {"id": "creator-one"},
+        "evaluations": {"artificial_analysis_intelligence_index": 20, "artificial_analysis_finance_and_accounting_index": 30, "artificial_analysis_engineering_index": null},
+        "pricing": {"price_1m_input_tokens": 1, "price_1m_output_tokens": 2},
+        "performance_v3": {"mean_time_to_first_token_seconds": 2, "mean_output_tokens_per_second": 50}
+      },
+      {
+        "id": "synthetic-engineering", "name": "Fictional Engineering", "model_creator": {"id": "creator-two"},
+        "evaluations": {"artificial_analysis_intelligence_index": 25, "artificial_analysis_engineering_index": 35},
+        "pricing": {"price_1m_input_tokens": 3, "price_1m_output_tokens": 4},
+        "performance_v3": {"mean_time_to_first_token_seconds": 1, "mean_output_tokens_per_second": 70}
+      },
+      {
+        "id": "synthetic-healthcare", "name": "Fictional Healthcare", "model_creator": {"id": "creator-three"},
+        "evaluations": {"artificial_analysis_intelligence_index": 28, "artificial_analysis_healthcare_and_medical_index": 38},
+        "pricing": {"price_1m_input_tokens": 1, "price_1m_output_tokens": 2},
+        "performance_v3": {"mean_time_to_first_token_seconds": 3, "mean_output_tokens_per_second": 40}
+      },
+      {
+        "id": "synthetic-no-general", "name": "Fictional missing G", "model_creator": {"id": "creator-four"},
+        "evaluations": {"artificial_analysis_intelligence_index": null, "artificial_analysis_finance_and_accounting_index": 40},
+        "pricing": {"price_1m_input_tokens": 1, "price_1m_output_tokens": 2},
+        "performance_v3": {"mean_time_to_first_token_seconds": 1, "mean_output_tokens_per_second": 80}
+      },
+      {
+        "id": "synthetic-legacy-only", "name": "Fictional legacy only", "model_creator": {"id": "creator-one"},
+        "evaluations": {"artificial_analysis_intelligence_index": 22, "artificial_analysis_finance_and_accounting_index": 32},
+        "pricing": {"price_1m_input_tokens": 1, "price_1m_output_tokens": null},
+        "performance": {"median_time_to_first_token_seconds": 0.01, "median_output_tokens_per_second": 999}
+      }
+    ]
+  }]
+}

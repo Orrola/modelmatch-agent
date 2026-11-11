@@ -1,0 +1,56 @@
+{
+  "fixture_kind": "sanitized_live_orchestration_regression",
+  "notice": "Sanitized actual Gemini responses from the failed first pipeline. Replay is offline, not a successful live test. No benchmark scores or credentials are included.",
+  "source_report_sha256": "36ad148a7797c44f33328d424b09b76c786a4293ee31ef4b786e299d9364506d",
+  "user_input": "Analyze financial documents for a finance team.",
+  "premature_calls": [
+    {
+      "name": "research_a",
+      "arguments": {
+        "model_ids": [],
+        "task": "Analyze financial documents for a finance team."
+      }
+    },
+    {
+      "name": "research_b",
+      "arguments": {
+        "task": "Analyze financial documents for a finance team.",
+        "model_ids": []
+      }
+    },
+    {
+      "name": "research_c",
+      "arguments": {
+        "task": "Analyze financial documents for a finance team.",
+        "model_ids": []
+      }
+    }
+  ],
+  "wrong_stage_output": {
+    "stage": "review_final",
+    "plan": {
+      "industry": "Finance",
+      "task_description": "Analyze financial documents for a finance team.",
+      "task_quote": "Analyze financial documents for a finance team.",
+      "task_type": "specialized_domain",
+      "user_alpha": null,
+      "constraints": [],
+      "workload": {
+        "monthly_requests": null,
+        "avg_input_tokens": null,
+        "avg_output_tokens": null
+      },
+      "clarification_questions": [
+        "What is the estimated volume of monthly requests?",
+        "What is the average size (in tokens or pages) of the financial documents to be analyzed?",
+        "Are there any specific latency (TTFT, output speed) or cost constraints?",
+        "Do you have any requirements regarding data residency or deployment (e.g., on-premise, US-only, cloud providers)?"
+      ]
+    },
+    "review": {
+      "summary": "All initial parallel research calls (research_a, research_b, research_c) failed with 'tool_failed'. No model details or catalog lookups could be retrieved.",
+      "followups": [],
+      "stopping_reason": "The initial research attempts returned execution errors, and no model details are available to review. We cannot retry irretrievable nulls or failed tool calls."
+    }
+  }
+}
