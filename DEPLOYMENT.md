@@ -38,9 +38,24 @@ These commands need no credentials because they do not initiate an analysis. Tes
 | `MODELMATCH_RESEARCHER_MODEL` | Current `gemini-3.5-flash-lite` |
 | `AA_API_KEY` | Server-side secret injection, preferably a pinned Secret Manager version |
 | `MODELMATCH_CACHE_DIR` | Writable disposable `/tmp/modelmatch-aa`; no volume required |
+| `MODELMATCH_PUBLIC_ORIGIN` | One exact external HTTPS origin; required for this TLS-ingress deployment, as described below |
 | `PORT` | Platform-provided; server binds `0.0.0.0` and one worker |
 
 Attach a dedicated runtime service account. Google auth must obtain ADC from the runtime identity, not local user ADC or a downloaded service-account key. Do not set `GOOGLE_APPLICATION_CREDENTIALS` to a developer path. The container does not include gcloud. Do not set a Gemini API key merely to replace working Vertex ADC.
+
+### Origin verification behind TLS ingress
+
+For service `modelmatch-agent-git` in `europe-west1`, configure:
+
+```text
+MODELMATCH_PUBLIC_ORIGIN=https://modelmatch-agent-git-978311583991.europe-west1.run.app
+```
+
+The browser's external HTTPS origin can differ from the internal ASGI HTTP scheme when ingress terminates TLS. The configured origin is the single authority for protected POST requests; both Origin (when supplied) and the original Host must match it. Client-supplied `X-Forwarded-Host`, `X-Forwarded-Proto` and `Forwarded` do not expand the allowlist. An invalid configured origin fails closed. Non-browser requests without Origin retain existing behavior and still require matching Host and existing analysis approval/limits; origin checking is not authentication.
+
+Leave this setting empty for normal local same-origin development. A local browser on a different hostname/port is not automatically allowed. Do not set `FORWARDED_ALLOW_IPS=*` or add wildcard CORS to fix an Origin rejection. Existing Uvicorn proxy-header processing remains restricted to its configured trusted peers; this fix does not require trusting additional proxy addresses. If Host is actually rewritten by an upstream proxy, investigate its documented behavior rather than accepting arbitrary forwarded hosts.
+
+All frontend requests use relative `/api/modelmatch/...` paths. No frontend build or API hostname override is needed. After a separately authorized deployment, inspect the browser POST Origin, request URL, response and SSE events. Confirm the exact host reaches the backend; actual production forwarded headers and ASGI scheme have not been observed in the local-only verification. Page/health success alone does not prove analysis correctness.
 
 Manually verify these prerequisites against current Google Cloud policy before provisioning or deployment; they have not been checked by cloud API calls in this phase:
 

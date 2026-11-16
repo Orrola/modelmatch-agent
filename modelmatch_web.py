@@ -12,6 +12,7 @@ from collections import deque
 from copy import deepcopy
 from decimal import Decimal
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, StreamingResponse
@@ -25,6 +26,44 @@ from tools.official_specs import public_diagnostics
 
 ROOT = Path(__file__).parent
 CONTRACT = "provisional-modelmatch-chat-v1"
+
+
+def normalized_origin(value: str) -> str:
+    """Parse a single HTTP origin without credentials, paths or header lists."""
+    if not value.isascii() or any(char.isspace() for char in value) or "?" in value or "#" in value:
+        raise ValueError("Invalid origin.")
+    parsed = urlsplit(value)
+    if (parsed.scheme not in ("http", "https") or not parsed.hostname
+            or parsed.username is not None or parsed.password is not None
+            or parsed.path not in ("", "/") or parsed.query or parsed.fragment
+            or "," in parsed.netloc or "\\" in parsed.netloc):
+        raise ValueError("Invalid origin.")
+    host = parsed.hostname.lower()
+    if ":" in host:
+        host = f"[{host}]"
+    port = parsed.port
+    if port is not None and port != {"http": 80, "https": 443}[parsed.scheme]:
+        host += f":{port}"
+    return f"{parsed.scheme}://{host}"
+
+
+def request_origin_allowed(request: Request, public_origin: str | None) -> bool:
+    """Use an operator-set public origin, never client-supplied forwarded headers."""
+    expected = normalized_origin(public_origin) if public_origin else None
+    origins = request.headers.getlist("origin")
+    hosts = request.headers.getlist("host")
+    if len(hosts) != 1 or len(origins) > 1:
+        return False
+    try:
+        if expected:
+            # TLS can end at the ingress; require the original Host to match too.
+            if normalized_origin(f"{urlsplit(expected).scheme}://{hosts[0]}") != expected:
+                return False
+        else:
+            expected = normalized_origin(str(request.base_url))
+        return not origins or normalized_origin(origins[0]) == expected
+    except ValueError:
+        return False
 
 
 class WebInput(BaseModel):
@@ -394,8 +433,11 @@ def install_modelmatch(app):
     async def modelmatch_request_limits(request: Request, call_next):
         if request.method == "POST" and (request.url.path.startswith("/api/modelmatch/") or request.url.path == "/chat"):
             from fastapi.responses import JSONResponse
-            origin = request.headers.get("origin")
-            if origin and origin.rstrip("/") != str(request.base_url).rstrip("/"):
+            try:
+                allowed = request_origin_allowed(request, os.getenv("MODELMATCH_PUBLIC_ORIGIN") or None)
+            except ValueError:
+                return JSONResponse({"detail": "Public origin configuration is invalid."}, status_code=503)
+            if not allowed:
                 return JSONResponse({"detail": "Cross-origin requests are not allowed."}, status_code=403)
             payload = bytearray()
             async for chunk in request.stream():
