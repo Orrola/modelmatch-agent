@@ -35,6 +35,7 @@ class RecordingModel(ScriptedModel):
         payload = self.payload(input)
         self.settings_seen.append({"stage": payload.get("stage", "research_or_writer"),
             "reasoning": getattr(model_settings.reasoning, "effort", None), "max_tokens": model_settings.max_tokens,
+            "extra_args": model_settings.extra_args,
             "tools": [tool.name for tool in tools]})
         if payload.get("stage") == "parse":
             self.entered.set()
@@ -66,6 +67,23 @@ class ParseIsolationTests(unittest.IsolatedAsyncioTestCase):
         parse = next(r for r in model.settings_seen if r["stage"] == "parse")
         self.assertEqual(parse["max_tokens"], 2048)
         self.assertEqual(parse["tools"], [])
+        self.assertEqual(parse["extra_args"]["allowed_openai_params"], ["reasoning_effort"])
+        self.assertTrue(all(not (r["extra_args"] or {}).get("allowed_openai_params")
+                            for r in model.settings_seen if r["stage"] != "parse"))
+
+    async def test_parse_permission_preserves_existing_settings_without_mutation(self):
+        model = RecordingModel()
+        extra_args = {"allowed_openai_params": ["seed"], "timeout": 30, "num_retries": 0}
+        workflow = self.workflow(model, ModelSettings(max_tokens=2048, extra_args=extra_args))
+        original = workflow.team.lead.model_settings
+        await workflow.run(USER_INPUT)
+        self.assertIs(workflow.team.lead.model_settings, original)
+        self.assertEqual(extra_args["allowed_openai_params"], ["seed"])
+        for record in model.settings_seen:
+            self.assertEqual(record["extra_args"]["allowed_openai_params"],
+                             ["seed", "reasoning_effort"] if record["stage"] == "parse" else ["seed"])
+            self.assertEqual(record["extra_args"]["timeout"], 30)
+            self.assertEqual(record["extra_args"]["num_retries"], 0)
 
     async def test_existing_non_parse_reasoning_configuration_is_preserved(self):
         model = RecordingModel()

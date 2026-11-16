@@ -412,6 +412,8 @@ function analysisError(result) {
   const failed = (result.integration_usage?.records || []).find(record => record.status === 'failed');
   const category = failed?.error?.category;
   const messages = {
+    adapter_rejection: 'The model adapter rejected unsupported request parameters before contacting Vertex AI. The server integration configuration needs correction.',
+    invalid_request_or_unsupported_combination: 'The model request or feature combination was rejected. Check the server integration configuration.',
     authentication_failed: 'Vertex AI authentication failed. Refresh your existing Application Default Credentials (ADC).',
     permission_or_service_access_denied: 'Vertex AI access was denied. Check permissions for the configured Google Cloud project.',
     model_or_resource_not_found: 'The configured Gemini model is unavailable or inaccessible in this Vertex location.',

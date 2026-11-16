@@ -32,11 +32,14 @@ def safe_error(error) -> dict:
                   403: "permission_or_service_access_denied", 404: "model_or_resource_not_found",
                   429: "quota_or_rate_limit", 500: "provider_error", 503: "provider_unavailable"}
     category = categories.get(status, "request_failed")
+    if name == "UnsupportedParamsError":
+        category = "adapter_rejection"
     if isinstance(error, (TimeoutError, asyncio.TimeoutError)):
         category = "request_timeout"
     if isinstance(error, BudgetExceeded):
         category = "execution_budget_exceeded"
     messages = {
+        "adapter_rejection": "The model adapter rejected unsupported request parameters before provider execution.",
         "authentication_failed": "ADC authentication failed; refresh credentials before retrying.",
         "permission_or_service_access_denied": "The identity cannot access this resource or service.",
         "model_or_resource_not_found": "The configured model or resource is unavailable or inaccessible.",

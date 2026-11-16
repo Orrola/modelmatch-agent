@@ -333,7 +333,7 @@ def install_modelmatch(app):
 
     @router.get("/modelmatch.js")
     def javascript():
-        return FileResponse(ROOT / "static/modelmatch.js", media_type="text/javascript")
+        return FileResponse(ROOT / "static/modelmatch.js", media_type="text/javascript", headers={"Cache-Control": "no-cache"})
 
     @router.get("/modelmatch.css")
     def stylesheet():

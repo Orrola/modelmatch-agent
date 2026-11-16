@@ -64,6 +64,8 @@ def failure_details(error):
         category = getattr(cause, "diagnostic_category", "evidence_validation_error")
     elif name == "BudgetExceeded":
         category = "budget_exceeded"
+    elif name == "UnsupportedParamsError":
+        category = "adapter_rejection"
     elif isinstance(status, int) or any(x in name for x in ("APIError", "ConnectionError", "RateLimit", "ServiceUnavailable")):
         category = "provider_error"
     result = {"category": category, "exception_type": name,

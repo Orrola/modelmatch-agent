@@ -241,8 +241,16 @@ class ModelMatchWorkflow:
         # These are installed SDK Agent fields, not invented Runner parameters.
         # A workflow owns one Lead and never runs its stages concurrently.
         agent.output_type = output_type
+        extra_args = original_settings.extra_args
+        if stage == "parse":
+            # LiteLLM 1.83.0 lacks reasoning metadata for this Gemini model.
+            # Permit this supported mapping only for the bounded parse request.
+            extra_args = {**(extra_args or {})}
+            extra_args["allowed_openai_params"] = list(dict.fromkeys([
+                *(extra_args.get("allowed_openai_params") or []), "reasoning_effort"]))
         agent.model_settings = replace(original_settings,
             parallel_tool_calls=stage in ("dispatch", "followup"), tool_choice=None,
+            extra_args=extra_args,
             reasoning=Reasoning(effort="low") if stage == "parse" else original_settings.reasoning)
         self.event("lead_stage_started", "Lead", stage=stage, output_schema=output_type.__name__)
         try:

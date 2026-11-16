@@ -61,6 +61,18 @@ class WebApplicationTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result["writer_fallback"])
         self.assertEqual(self.service.active, 0)
 
+    async def test_current_script_has_a_version_and_requires_cache_revalidation(self):
+        import re
+        for path in ("/", "/modelmatch"):
+            page = await self.client.get(path)
+            self.assertEqual(page.headers["cache-control"], "no-cache")
+            match = re.search(r'src="(/modelmatch\.js\?v=[a-z0-9-]+)"', page.text)
+            self.assertIsNotNone(match)
+            script = await self.client.get(match.group(1))
+            self.assertEqual(script.status_code, 200)
+            self.assertEqual(script.headers["cache-control"], "no-cache")
+            self.assertIn("adapter_rejection", script.text)
+
     async def test_optional_fields_do_not_block_quality_analysis(self):
         result = (await self.analyze())["result"]
         self.assertIn("decision", result)
