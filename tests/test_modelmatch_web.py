@@ -126,7 +126,7 @@ class WebApplicationTests(unittest.IsolatedAsyncioTestCase):
                 response = await self.client.post("/api/modelmatch/recalculate", json={"analysis_id": key, "user_alpha": alpha})
                 self.assertEqual(response.status_code, 200)
                 body = response.json()
-                expected = decide(self.service.saved[key]["prepared"], task_type="mixed_or_unknown", user_alpha=alpha)
+                expected = decide(self.service.saved[key]["prepared"], task_type="specialized_domain", user_alpha=alpha)
                 self.assertEqual(body["decision"], json.loads(json.dumps(expected)))
                 self.assertFalse(body["research_rerun"])
                 self.assertTrue(body["writer_explanation_stale"])
@@ -136,7 +136,8 @@ class WebApplicationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_recalculation_reports_matching_original_writer_weights(self):
         done = await self.analyze()
-        result = (await self.client.post("/api/modelmatch/recalculate", json={"analysis_id": done["analysis_id"], "user_alpha": .6})).json()
+        self.assertEqual(done["result"]["decision"]["weights"]["alpha"], .3)
+        result = (await self.client.post("/api/modelmatch/recalculate", json={"analysis_id": done["analysis_id"], "user_alpha": .3})).json()
         self.assertFalse(result["writer_explanation_stale"])
 
     async def test_expired_and_evidenceless_analysis_ids_have_explicit_errors(self):

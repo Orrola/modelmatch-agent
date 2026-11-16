@@ -87,9 +87,9 @@ ValidationStep = Literal["task_pilot", "tool_use_pilot", "verify_context", "veri
 
 class WriterOutput(StrictOutput):
     """Writer selects grounded report content; code owns all numbers and order."""
-    candidate_ids: list[str]
-    evidence_ids: list[str]
-    validation_steps: list[ValidationStep]
+    candidate_ids: list[str] = Field(description="Copy the supplied candidate_ids exactly, including order.")
+    evidence_ids: list[str] = Field(description="Copy the COMPLETE canonical evidence_ids collection; no missing or additional references.")
+    validation_steps: list[ValidationStep] = Field(description="Choose at least one allowed next-validation code.")
 
 
 @dataclass

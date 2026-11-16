@@ -15,6 +15,10 @@ from pathlib import Path
 
 from agents import Model, ModelSettings
 from dotenv import load_dotenv
+from contextvars import ContextVar
+from tools.run_diagnostics import CALL_CONTEXT, failure_details, log_metadata, now, response_metadata
+
+PROVIDER_METADATA = ContextVar("modelmatch_provider_metadata", default=None)
 
 
 def safe_error(error) -> dict:
@@ -149,15 +153,22 @@ class MeteredModel(Model):
         size = len(json.dumps(input, default=str)) + len(system_instructions or "")
         size += len(str(getattr(output_schema, "json_schema", lambda: {})()))
         size += sum(len(str(getattr(t, "params_json_schema", {}))) for t in tools)
-        number = self.budget.reserve(size)
         started = time.monotonic()
-        record = {"call": number, "model": self.model_name, "prompt_chars": size}
+        record = {"call": None, "model": self.model_name, "prompt_chars": size, "started_at": now(),
+                  **CALL_CONTEXT.get(), "adapter_invoked": False,
+                  "output_schema": output_schema.name() if output_schema else None}
+        metadata = {}
+        token = PROVIDER_METADATA.set(metadata)
         try:
+            record["call"] = self.budget.reserve(size)
             settings = replace(model_settings, max_tokens=min(model_settings.max_tokens or self.config.max_output_tokens, self.config.max_output_tokens),
                                extra_args={**(model_settings.extra_args or {}), "num_retries": 0})
+            record["settings"] = {"max_output_tokens": settings.max_tokens, "temperature": settings.temperature,
+                "top_p": settings.top_p, "timeout_seconds": self.config.timeout_seconds, "num_retries": 0}
+            record["adapter_invoked"] = True
             response = await asyncio.wait_for(self.inner.get_response(system_instructions, input, settings, tools,
                 output_schema, handoffs, tracing, **kwargs), timeout=self.config.timeout_seconds)
-            record.update(status="success", usage=token_usage(response.usage),
+            record.update(status="success", usage=token_usage(response.usage), **response_metadata(response),
                           tool_calls=[getattr(item, "name", None) for item in response.output if getattr(item, "type", None) == "function_call"])
             if self.budget.capture_responses:
                 outputs = []
@@ -172,12 +183,20 @@ class MeteredModel(Model):
                 record["provider_response"] = {"response_id": response.response_id,
                     "request_id": getattr(response, "request_id", None), "output": outputs}
             return response
+        except asyncio.CancelledError:
+            record.update(status="cancelled")
+            raise
         except Exception as error:
-            record.update(status="failed", error=safe_error(error))
+            record.update(status="failed", error=safe_error(error), failure=failure_details(error))
             raise
         finally:
+            record.update(metadata)
+            record.setdefault("finish_reason", None)
+            record["ended_at"] = now()
             record["elapsed_seconds"] = round(time.monotonic() - started, 3)
             self.budget.records.append(record)
+            log_metadata("model_call", **{k: v for k, v in record.items() if k != "provider_response"})
+            PROVIDER_METADATA.reset(token)
 
     def stream_response(self, *args, **kwargs):
         raise BudgetExceeded("Live integration tests do not permit streaming provider requests.")
@@ -200,7 +219,26 @@ def create_models(config: VertexConfig, budget: CallBudget):
     from agents.extensions.models.litellm_model import LitellmModel
     import litellm
     litellm.suppress_debug_info = True
-    return tuple(MeteredModel(LitellmModel(model=f"vertex_ai/{name}", api_key="unused"), name, budget, config)
+    class DiagnosticLiteLLMModel(LitellmModel):
+        """Observe metadata before the installed adapter discards it; requests are unchanged."""
+
+        async def _fetch_response(self, *args, **kwargs):
+            response = await super()._fetch_response(*args, **kwargs)
+            metadata = PROVIDER_METADATA.get()
+            if metadata is not None and not isinstance(response, tuple):
+                choices = getattr(response, "choices", None) or []
+                reason = getattr(choices[0], "finish_reason", None) if choices else None
+                metadata["finish_reason"] = reason if isinstance(reason, str) else None
+                metadata["reported_model"] = getattr(response, "model", None)
+                metadata["model_version"] = getattr(response, "model_version", None)
+                metadata["response_id"] = getattr(response, "id", None)
+                metadata["provider_response_received"] = True
+                details = getattr(getattr(response, "usage", None), "completion_tokens_details", None)
+                reasoning = getattr(details, "reasoning_tokens", None)
+                metadata["reasoning_tokens"] = reasoning if isinstance(reasoning, int) else None
+            return response
+
+    return tuple(MeteredModel(DiagnosticLiteLLMModel(model=f"vertex_ai/{name}", api_key="unused"), name, budget, config)
                  for name in (config.model, config.researcher_model))
 
 

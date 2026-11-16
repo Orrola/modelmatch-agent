@@ -2,9 +2,9 @@
 const $ = id => document.getElementById(id);
 const labels = {fully_evaluable: 'Fully evaluable', provisional: 'Provisional', unverified: 'Unverified', ineligible: 'Ineligible'};
 const stageNames = {lead: 'Lead', A: 'Researcher A', B: 'Researcher B', C: 'Researcher C', review: 'Evidence Review', decision: 'Decision', writer: 'Writer'};
-const stageStates = {pending: 'Pending', running: 'Running', completed: 'Completed', failed: 'Failed', skipped: 'Not reached', interrupted: 'Stopped'};
+const stageStates = {pending: 'Pending', running: 'Running', validating: 'Validating', completed: 'Completed', accepted: 'Accepted', failed: 'Failed', skipped: 'Skipped', not_reached: 'Not reached', cancelled: 'Cancelled', fallback: 'Fallback report', interrupted: 'Interrupted'};
 const state = {
-  view: 'overview', busy: false, mode: null, original: null, decision: null, analysisId: null,
+  view: 'overview', busy: false, mode: null, original: null, decision: null, analysisId: null, runId: null,
   controller: null, generation: 0, stages: new Map(), traces: new Map(), activity: [],
   selected: new Set(), drawerId: null, drawerFocus: null, evidenceLimit: 40,
   weightSerial: 0, weightTimer: null, weightController: null, writerStale: false,
@@ -102,11 +102,12 @@ function navigate(view, focus = false) {
 function resetProgress() {
   state.stages = new Map(Object.keys(stageNames).map(key => [key, 'pending'])); renderProgress();
 }
-function progress(agent, status, stage = '') {
+function progress(agent, status, stage = '', accepted = null) {
+  if (['snapshot', 'decision_gate'].includes(stage) || (['followup', 'review_final'].includes(stage) && ['skipped', 'not_reached'].includes(status))) return;
   const key = stage === 'review' || stage === 'review_final' ? 'review'
     : /^Researcher ([ABC])/.exec(agent)?.[1] || (agent === 'Decision Tool' ? 'decision' : agent === 'Writer' ? 'writer' : agent === 'Lead' ? 'lead' : null);
   if (!key) return;
-  const normalized = status === 'cancelled' ? 'interrupted' : status;
+  const normalized = status === 'completed' && accepted === false ? 'validating' : status;
   if (stageStates[normalized]) state.stages.set(key, normalized);
   renderProgress();
 }
@@ -139,19 +140,20 @@ function observedParallel(trace) {
     && Math.max(...starts.map(e => e.monotonic)) < Math.min(...ends.map(e => e.monotonic));
 }
 function finishProgress(result = null, stopped = false) {
-  for (const e of result?.trace || []) {
+  for (const e of result?.diagnostics ? [] : result?.trace || []) {
     if (e.type === 'researcher_end') progress(`Researcher ${e.role}`, e.status);
     if (e.type === 'lead_stage_completed') progress('Lead', 'completed', e.stage);
     if (e.type === 'decision_completed') progress('Decision Tool', 'completed');
   }
-  if (result && 'writer_fallback' in result) progress('Writer', result.writer_fallback ? 'failed' : 'completed');
+  for (const e of Object.values(result?.diagnostics?.stages || {})) progress(e.agent, e.status, e.stage, e.status === 'accepted');
+  if (result && 'writer_fallback' in result) progress('Writer', result.writer_fallback ? 'fallback' : 'accepted');
   for (const [key, value] of state.stages) {
-    if (value === 'running') state.stages.set(key, stopped ? 'interrupted' : 'failed');
-    if (value === 'pending') state.stages.set(key, 'skipped');
+    if (value === 'running' || value === 'validating') state.stages.set(key, 'interrupted');
+    if (value === 'pending') state.stages.set(key, 'not_reached');
   }
   renderProgress();
   const parallel = result && observedParallel(result.trace || []);
-  text('workflow-status', stopped ? 'Stopped' : parallel ? 'Parallel execution observed' : result?.status === 'clarification_needed' ? 'Awaiting clarification' : result?.decision ? 'Research complete' : 'Did not complete');
+  text('workflow-status', stopped ? 'Stopped' : result?.writer_fallback ? 'Writer failed · Fallback report' : result?.status === 'clarification_needed' ? 'Awaiting clarification' : result?.decision ? 'Research complete' : parallel ? 'Parallel research observed · Did not complete' : 'Did not complete');
 }
 function addActivity(agent, message) {
   state.activity.push({agent, message});
@@ -340,7 +342,9 @@ function renderTechnical() {
   if (!$('technical-details').open) return;
   text('technical-data', state.decision ? JSON.stringify(state.decision, null, 2) : 'No decision records available.');
   text('technical-plan', JSON.stringify(state.original?.plan || {}, null, 2));
-  text('technical-events', JSON.stringify(state.original?.trace || [], null, 2));
+  text('technical-events', JSON.stringify({run_id: state.original?.run_id || state.runId,
+    diagnostics: state.original?.diagnostics, classification: state.original?.classification,
+    integration_usage: state.original?.integration_usage, trace: state.original?.trace || []}, null, 2));
   renderTraces();
   if (!$('original-writer-text')) {
     const detail = el('details'), summary = el('summary', '', 'Complete original Writer report'), pre = el('pre'); pre.id = 'original-writer-text'; detail.append(summary, pre); $('technical-details').append(detail);
@@ -433,7 +437,8 @@ function decodeFrames(buffer) {
   return {events, buffer};
 }
 function handle(event) {
-  if (event.type === 'stage') { progress(event.agent, event.status, event.stage); text('workflow-status', 'In progress'); }
+  if (event.run_id) state.runId = event.run_id;
+  if (event.type === 'stage') { progress(event.agent, event.phase_status || event.status, event.stage, event.controller_accepted); text('workflow-status', 'In progress'); }
   if (event.type === 'activity') addActivity(event.agent, event.text);
   if (event.type === 'interpretation') renderPlan(event.plan);
   if (event.type === 'tool_trace') { state.traces.set(event.call.call_id, event.call); renderTraces(); }
@@ -446,7 +451,7 @@ function handle(event) {
   finishProgress(result);
   if (result.decision) {
     renderDecision(result.decision); navigate('comparison', true);
-    setStatus(result.writer_fallback ? 'Analysis completed with a deterministic fallback report. The Writer output was unavailable or rejected.' : 'Analysis complete. Compare models and inspect the evidence behind the ranking.');
+    setStatus(result.writer_fallback ? `Writer failed (${pretty(result.writer_error?.category || 'unavailable output')}). Showing a deterministic fallback report with unchanged scores.` : 'Analysis complete. Compare models and inspect the evidence behind the ranking.');
   } else if (result.status === 'clarification_needed') {
     navigate('overview', true); $('clarification').hidden = false;
     $('questions').replaceChildren(...(result.questions || []).map(q => el('li', '', q)));
@@ -483,7 +488,7 @@ async function analyze() {
   catch (error) { $('form-error').hidden = false; text('form-error', error.message); return; }
   $('form-error').hidden = true; invalidateWeights();
   const generation = ++state.generation;
-  state.busy = true; state.controller = new AbortController(); state.analysisId = null; state.original = null; state.decision = null;
+  state.busy = true; state.controller = new AbortController(); state.analysisId = null; state.original = null; state.decision = null; state.runId = null;
   state.traces.clear(); state.activity = []; state.evidenceLimit = 40; state.selected.clear(); state.drawerId = null;
   if ($('model-drawer').open) $('model-drawer').close();
   $('results').hidden = true; $('comparison-empty').hidden = false; $('evidence-results').hidden = true; $('evidence-empty').hidden = false;
@@ -505,7 +510,7 @@ async function analyze() {
   } catch (error) {
     if (generation !== state.generation) return;
     const stopped = error.name === 'AbortError';
-    finishProgress(null, stopped); setStatus(stopped ? 'Analysis stopped. Unfinished stages did not complete.' : error.message, !stopped);
+    finishProgress(null, stopped); setStatus((stopped ? 'Analysis stopped. Unfinished stages did not complete.' : error.message) + (state.runId ? ` Run ID: ${state.runId}` : ''), !stopped);
     addActivity('Application', stopped ? 'Stopped by the user.' : 'Connection or analysis failed. No automatic retry was made.');
   } finally {
     if (reader) { try { await reader.cancel(); } catch { /* The stream may already be closed. */ } reader.releaseLock(); }

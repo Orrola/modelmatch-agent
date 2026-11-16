@@ -1,5 +1,49 @@
 # ModelMatch web application and provisional API
 
+## Reliability metadata
+
+The existing request bodies, endpoints and SSE framing are preserved. Additive fields
+include a server-generated `run_id` on SSE events, final results and `/chat` envelopes;
+streaming responses also expose `X-ModelMatch-Run-ID`. `/run` forwards that same identity.
+Final results include `diagnostics` (stage history, current states, first observed failure),
+`classification`, and `writer_error` when applicable. The first observed failure may have
+been recovered by an authorized follow-up; inspect the final states and workflow status too.
+
+`completed` means generation returned, `accepted` means the controller's checks passed.
+These precise values live in diagnostic states and the additive SSE `phase_status`.
+Legacy SSE `status` keeps its existing vocabulary: accepted maps to completed,
+generation completion stays running until acceptance, fallback maps to failed, and
+not_reached maps to skipped. New clients use phase_status for the finer distinction.
+`failed`, `cancelled`, `not_reached`, intentional `skipped`, and Writer `fallback` remain
+distinct. Review acceptance alone does not approve the subsequent Decision evidence gate.
+Writer fallback preserves deterministic scores but is not successful Writer generation.
+Stable Writer error categories include `provider_error`, `timeout`, `schema_validation_error`,
+`evidence_validation_error` and `budget_exceeded`; unknown errors remain `execution_error`.
+
+Structured application logs contain metadata only, not request text, model output or hidden
+reasoning. Call records distinguish adapter invocation and available provider response metadata
+from controller acceptance. Missing finish reasons/model versions remain null. LiteLLM's raw
+non-streaming response metadata is observed before the installed adapter discards it; SDK
+upgrades require the adapter regression test. Numeric reasoning-token usage may be retained
+when supplied, never reasoning text. `model_requests` remains a reservation count, not a
+guaranteed count of provider-processed or billable calls. Existing opt-in CLI response capture
+is separate from normal production logging.
+
+Classification policy `modelmatch-task-classification-v1` resolves only the overlap between
+`reasoning_analysis`, `specialized_domain`, and `mixed_or_unknown`: explicit cross-domain
+scope/multiple recognized domains wins; one recognized domain selects specialized work;
+domain-independent analytical work selects reasoning; otherwise the conservative mixed/unknown
+default applies. The recognized vocabulary covers finance, legal, healthcare, engineering,
+economics and strategy/operations; it is not an exhaustive semantic classifier. Other proposed
+primary task types are retained. Results record the proposal, resolution and rule. This policy
+does not establish benchmark relevance, change the weight table, or override user alpha.
+The same prepared evidence and weights still use the unchanged deterministic Decision engine.
+
+Uvicorn access logs strip query strings, including compatibility `/run` inputs. Cloud Run's
+own request-log handling remains a platform concern: prefer POST for sensitive requirements
+and review platform log access/retention separately. Do not assume application redaction
+removes query strings from upstream infrastructure logs.
+
 Start the real local application from the project directory:
 
 ```sh

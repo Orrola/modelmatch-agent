@@ -7,6 +7,7 @@ import json
 import re
 import time
 import uuid
+import hashlib
 from copy import deepcopy
 from dataclasses import asdict, replace
 
@@ -20,10 +21,25 @@ from modelmatch_schemas import (
 from tools.artificial_analysis import numeric, utc_now
 from tools.decision import TASK_DEFAULTS, decide, evaluate_operations, resolve_weights
 from tools.model_evidence import OperationalRequirement, RelevanceDecision, Workload, build_candidates
+from tools.run_diagnostics import CALL_CONTEXT, RunDiagnostics, failure_details, log_metadata
+from tools.task_classification import POLICY_VERSION as CLASSIFICATION_VERSION, resolve_task_type
 
 
 class WorkflowError(RuntimeError):
     """Errors use stable public codes; provider exception text is never returned."""
+
+    def __init__(self, code, rule=None):
+        self.rule = rule or code
+        super().__init__(code)
+
+
+class PlanValidationError(ValueError):
+    """Preserve the input-validation rule without logging the input."""
+
+    def __init__(self, code, message):
+        self.validation_code = code
+        self.diagnostic_category = "plan_validation_error"
+        super().__init__(message)
 
 
 def _quoted(raw: str, quote: str | None) -> bool:
@@ -43,31 +59,31 @@ def _number_in_quote(value: float, quote: str) -> bool:
 def validate_plan(plan: ParsedPlan, raw: str):
     """Require explicit input anchors; never invent workload, alpha or hardness."""
     if not _quoted(raw, plan.task_quote) or not plan.task_description.strip():
-        raise ValueError("A concrete task anchored in the user input is required.")
+        raise PlanValidationError("task_anchor_missing", "A concrete task anchored in the user input is required.")
     vague = re.sub(r"[^a-z ]", "", plan.task_quote.lower()).strip()
     if vague in {"best llm", "best model", "llm", "model", "hello", "help", "recommend a model", "which model is best"}:
-        raise ValueError("The request needs a concrete task.")
+        raise PlanValidationError("concrete_task_missing", "The request needs a concrete task.")
     if plan.industry and plan.task_quote.strip().casefold() == plan.industry.strip().casefold():
-        raise ValueError("Please describe a concrete task, not only an industry.")
+        raise PlanValidationError("industry_only", "Please describe a concrete task, not only an industry.")
     for stated in [plan.user_alpha, *[getattr(plan.workload, key) for key in ("monthly_requests", "avg_input_tokens", "avg_output_tokens")]]:
         if stated is not None and (not _quoted(raw, stated.source_quote) or not _number_in_quote(stated.value, stated.source_quote)):
-            raise ValueError("A numeric extraction is not supported by the quoted input.")
+            raise PlanValidationError("numeric_quote_mismatch", "A numeric extraction is not supported by the quoted input.")
     for constraint in plan.constraints:
         if not _quoted(raw, constraint.source_quote):
-            raise ValueError("A constraint is not supported by the input.")
+            raise PlanValidationError("constraint_quote_mismatch", "A constraint is not supported by the input.")
         if numeric(constraint.target) and not _number_in_quote(constraint.target, constraint.source_quote):
-            raise ValueError("A constraint target is not stated in its quote.")
+            raise PlanValidationError("constraint_target_mismatch", "A constraint target is not stated in its quote.")
         if isinstance(constraint.target, str) and constraint.target.casefold() not in constraint.source_quote.casefold():
-            raise ValueError("A categorical constraint is not stated in its quote.")
+            raise PlanValidationError("categorical_quote_mismatch", "A categorical constraint is not stated in its quote.")
         if constraint.hard and (not _quoted(raw, constraint.hard_source_quote) or not re.search(
             r"\b(must|hard|strict|mandatory|required|maximum|minimum|only|cannot)\b|at most|at least|no more than|on-prem", constraint.hard_source_quote or "", re.I
         )):
-            raise ValueError("A hard constraint requires an explicit mandatory condition.")
+            raise PlanValidationError("mandatory_quote_missing", "A hard constraint requires an explicit mandatory condition.")
     requirements = tuple(OperationalRequirement(c.metric, c.target, c.hard, c.statistic) for c in plan.constraints)
     workload = Workload(**{key: getattr(plan.workload, key).value if getattr(plan.workload, key) else None
                           for key in ("monthly_requests", "avg_input_tokens", "avg_output_tokens")})
     if any(c.metric == "monthly_cost_usd" for c in requirements) and any(value is None for value in asdict(workload).values()):
-        raise ValueError("Monthly cost requires request volume and average input/output tokens.")
+        raise PlanValidationError("monthly_workload_missing", "Monthly cost requires request volume and average input/output tokens.")
     weights = resolve_weights(plan.task_type, plan.user_alpha.value if plan.user_alpha else None)
     return requirements, workload, weights
 
@@ -108,18 +124,24 @@ class WorkflowHooks(RunHooks):
 
     async def on_tool_start(self, context, agent, tool):
         self.workflow.event("tool_start", agent.name, context_id=context.context.context_id, tool=tool.name)
+        log_metadata("tool_started", run_id=self.workflow.run_id, context_id=context.context.context_id, agent=agent.name, tool=tool.name)
         await self._forward("on_tool_start", context, agent, tool)
 
     async def on_tool_end(self, context, agent, tool, result):
         self.workflow.event("tool_end", agent.name, context_id=context.context.context_id, tool=tool.name)
+        log_metadata("tool_ended", run_id=self.workflow.run_id, context_id=context.context.context_id, agent=agent.name, tool=tool.name)
         await self._forward("on_tool_end", context, agent, tool, result)
 
 
 class ModelMatchWorkflow:
     def __init__(self, model, researcher_model, *, settings=None, hooks=None,
-                 snapshot_loader=None, limits=None, runner=Runner, official_service=None):
+                 snapshot_loader=None, limits=None, runner=Runner, official_service=None, run_id=None):
         self.team = create_team(model, researcher_model, settings)
         self.panel = hooks
+        self.diagnostics = RunDiagnostics(run_id or getattr(hooks, "run_id", None), getattr(hooks, "emit", None))
+        self.run_id = self.diagnostics.run_id
+        self.controller_stage = "parse"
+        self.classification = None
         self.hooks = WorkflowHooks(self, hooks)
         self.snapshot_loader = snapshot_loader
         self.limits = limits or OrchestrationLimits()
@@ -150,19 +172,36 @@ class ModelMatchWorkflow:
         self.clarification_suggestions = []
 
     def event(self, kind, agent, **fields):
-        event = {"seq": len(self.trace), "type": kind, "agent": agent,
+        event = {"seq": len(self.trace), "type": kind, "agent": agent, "run_id": self.run_id,
                  "timestamp": utc_now(), "monotonic": time.monotonic(), **fields}
         self.trace.append(event)
         if self.panel is not None:
             self.panel.activity(agent, kind.replace("_", " "))
 
     async def _run(self, agent, prompt, context, output_type):
-        result = await self.runner.run(agent, prompt, context=context, hooks=self.hooks,
-                                       max_turns=self.limits.max_agent_turns,
-                                       run_config=RunConfig(tracing_disabled=True))
-        output = result.final_output
-        parsed = output if isinstance(output, output_type) else output_type.model_validate_json(output) if isinstance(output, str) else output_type.model_validate(output)
-        return parsed, result
+        stage = context.stage if context.role == "Lead" else context.role if context.role in ("A", "B", "C") else "writer"
+        token = CALL_CONTEXT.set({"run_id": self.run_id, "stage": stage, "agent": agent.name, "context_id": context.context_id})
+        self.diagnostics.stage(stage, "running", agent.name, context_id=context.context_id)
+        try:
+            result = await self.runner.run(agent, prompt, context=context, hooks=self.hooks,
+                                           max_turns=self.limits.max_agent_turns,
+                                           run_config=RunConfig(tracing_disabled=True))
+            self.diagnostics.stage(stage, "completed", agent.name, context_id=context.context_id)
+            output = result.final_output
+            parsed = output if isinstance(output, output_type) else output_type.model_validate_json(output) if isinstance(output, str) else output_type.model_validate(output)
+            return parsed, result
+        except asyncio.CancelledError:
+            self.diagnostics.stage(stage, "cancelled", agent.name, context_id=context.context_id)
+            raise
+        except Exception as error:
+            self.diagnostics.stage(stage, "failed", agent.name, error=failure_details(error))
+            raise
+        finally:
+            CALL_CONTEXT.reset(token)
+
+    def blocked(self, code, error=None):
+        self.diagnostics.stage(self.controller_stage, "failed", code=code, rule=getattr(error, "rule", code),
+                               error=failure_details(error) if error else None)
 
     def research_tool_enabled(self, role):
         """SDK tool visibility follows controller state, not a model's stage claim."""
@@ -305,7 +344,7 @@ class ModelMatchWorkflow:
         agent = self.team.researchers[role].clone(name=name)
         self.event("researcher_start", name, role=role, context_id=context.context_id,
                    parent_context_id=self.lead_context.context_id, round_number=context.round_number,
-                   model_ids=context.model_ids, task=task)
+                   model_ids=context.model_ids)
         try:
             prompt = json.dumps({"task": task, "requirements": self.plan.model_dump(), "snapshot_id": self.snapshot["snapshot_id"],
                                  "target_model_ids": context.model_ids, "fresh_context": True, "research_run_id": context.context_id})
@@ -323,14 +362,16 @@ class ModelMatchWorkflow:
                     payload["operations"] = {**previous["operations"], **payload["operations"]}
             self.role_results[role] = payload
             self.errors.pop(role, None)
+            self.diagnostics.stage(role, "accepted", name, context_id=context.context_id)
             self.event("researcher_end", name, role=role, context_id=context.context_id, status="completed", data_calls=context.tool_calls)
             return json.dumps({"role": role, "status": "completed", "model_count": len(payload["models"]),
                                "valid_evidence_count": len(payload["valid_evidence"]), "missing_model_count": len(payload["missing_manifest"])})
         except asyncio.CancelledError:
             self.event("researcher_end", name, role=role, context_id=context.context_id, status="cancelled")
             raise
-        except Exception:
+        except Exception as error:
             self.errors[role] = "researcher_run_failed"
+            self.diagnostics.stage(role, "failed", name, error=failure_details(error))
             self.event("researcher_end", name, role=role, context_id=context.context_id, status="failed", data_calls=context.tool_calls)
             return json.dumps({"role": role, "status": "failed", "error": "researcher_run_failed"})
 
@@ -347,6 +388,7 @@ class ModelMatchWorkflow:
                 "stopping_rule": "Fixed snapshot; no new source for null indices or official specifications. At most one targeted follow-up round."}
 
     async def _dispatch(self, stage, tasks):
+        self.controller_stage = stage
         if stage == "dispatch" and tasks or stage == "followup" and (
             not tasks or tuple(t.model_dump_json() for t in tasks) != self._authorized_followups):
             raise WorkflowError("research_dispatch_not_authorized")
@@ -361,9 +403,14 @@ class ModelMatchWorkflow:
         if self.dispatched != set(self.allowed) or not any(set(batch["calls"]) == expected and len(batch["calls"]) == len(expected)
                                                          for batch in self.batches[start:]):
             raise WorkflowError("researchers_not_dispatched_in_one_model_turn")
+        self.diagnostics.stage(stage, "accepted")
 
     async def _workflow(self, user_input):
         self.plan = await self.lead("parse", {"user_input": user_input, "task_weight_policy": TASK_DEFAULTS})
+        proposed = self.plan.task_type
+        self.plan.task_type, reason = resolve_task_type(user_input, proposed)
+        self.classification = {"policy_version": CLASSIFICATION_VERSION, "proposed_task_type": proposed,
+                               "task_type": self.plan.task_type, "reason": reason}
         questions = []
         try:
             self.requirements, self.workload, self.weights = validate_plan(self.plan, user_input)
@@ -371,23 +418,32 @@ class ModelMatchWorkflow:
             # All messages originate in local schema/input validators, not provider
             # exception bodies. Optional model suggestions cannot create requirements.
             questions = [str(error)]
+            self.blocked("plan_validation_failed", error)
         if questions:
             self.event("clarification_requested", "Lead")
             return {"status": "clarification_needed", "questions": questions,
                     "markdown": "Please clarify:\n\n" + "\n".join(f"- {q}" for q in questions)}
         self.clarification_suggestions = list(self.plan.clarification_questions)
+        self.diagnostics.stage("parse", "accepted", classification=self.classification, alpha=self.weights["alpha"])
+        if getattr(self.panel, "emit", None):
+            self.panel.emit({"type": "interpretation", "plan": self.plan.model_dump(), "classification": self.classification,
+                             "controller_accepted": True})
         if self.clarification_suggestions:
             self.event("optional_clarifications_deferred", "Lead", count=len(self.clarification_suggestions))
         if self.snapshot_loader is None:
             raise WorkflowError("snapshot_loader_missing")
+        self.controller_stage = "snapshot"
+        self.diagnostics.stage("snapshot", "running")
         try:
             self.snapshot = await self.snapshot_loader()
             self.prepared()
-        except Exception:
-            raise WorkflowError("snapshot_unavailable") from None
+        except Exception as error:
+            raise WorkflowError("snapshot_unavailable") from error
+        self.diagnostics.stage("snapshot", "accepted", snapshot_id=self.snapshot["snapshot_id"])
         await self._dispatch("dispatch", [])
         for round_number in range(self.limits.max_followup_rounds + 1):
             stage = "review" if round_number == 0 else "review_final"
+            self.controller_stage = stage
             payload = self.review_payload()
             output = await self.lead(stage, {"evidence_review": payload})
             self.reviews.append({"stage": stage, **output.model_dump(), "audit": payload})
@@ -395,62 +451,99 @@ class ModelMatchWorkflow:
             self.event("evidence_review", "Lead", round_number=round_number,
                        followup_roles=[t.role for t in tasks])
             if not tasks:
+                self.diagnostics.stage(stage, "accepted")
+                for optional in ("followup", "review_final"):
+                    if optional not in self.diagnostics.states:
+                        self.diagnostics.stage(optional, "skipped", code="no_followup_requested")
                 self.event("research_stopped", "Lead", reason="lead_review_complete")
                 break
             if round_number == self.limits.max_followup_rounds:
+                self.diagnostics.stage(stage, "accepted", stopping_code="followup_round_limit")
+                for optional in ("followup", "review_final"):
+                    if optional not in self.diagnostics.states:
+                        self.diagnostics.stage(optional, "skipped", code="followup_round_limit")
                 self.event("research_stopped", "Lead", reason="followup_round_limit")
                 break
-            if len({t.role for t in tasks}) != len(tasks) or len(tasks) + self.researcher_count > self.limits.max_researcher_runs or any(not t.reason.strip() or not t.task.strip() for t in tasks):
-                raise WorkflowError("invalid_or_over_budget_followup")
+            if len({t.role for t in tasks}) != len(tasks):
+                raise WorkflowError("invalid_or_over_budget_followup", "duplicate_followup_roles")
+            if len(tasks) + self.researcher_count > self.limits.max_researcher_runs:
+                raise WorkflowError("invalid_or_over_budget_followup", "followup_budget_exceeded")
+            if any(not t.reason.strip() or not t.task.strip() for t in tasks):
+                raise WorkflowError("invalid_or_over_budget_followup", "followup_task_or_reason_empty")
             self._authorized_followups = tuple(t.model_dump_json() for t in tasks)
+            self.diagnostics.stage(stage, "accepted", followup_roles=[t.role for t in tasks])
             await self._dispatch("followup", tasks)
+        self.controller_stage = "decision_gate"
+        self.diagnostics.stage("decision_gate", "running")
         prepared = self.prepared()
         complete_roles = not self.errors and all(role in self.role_results and set(self.role_results[role]["models"]) == set(prepared["candidates"]) for role in ("A", "B", "C"))
         if not complete_roles:
+            self.blocked("researcher_evidence_incomplete")
             return {"status": "insufficient_evidence", "error": "researcher_evidence_incomplete",
                     "markdown": "No reliable recommendation is available because researcher evidence is incomplete. Retry the failed research before making a decision."}
         for role, result in self.role_results.items():
             if result["models"] != prepared["researcher_evidence"][role]:
                 raise WorkflowError("researcher_evidence_conflict")
+        self.diagnostics.stage("decision_gate", "accepted")
+        self.controller_stage = "decision"
+        self.diagnostics.stage("decision", "running", "Decision Tool")
         self.event("decision_started", "Decision Tool")
         decision = decide(prepared, task_type=self.plan.task_type, user_alpha=self.plan.user_alpha.value if self.plan.user_alpha else None)
         if decision["weights"] != self.weights:
             raise WorkflowError("weight_policy_changed_during_research")
         self.event("decision_completed", "Decision Tool")
+        self.diagnostics.stage("decision", "accepted", "Decision Tool")
         from recommendation import render_recommendation, writer_payload, validate_writer
         payload = writer_payload(decision)
         writer_context = AgentCallContext(self, "Writer", str(uuid.uuid4()), stage="write")
         fallback = False
+        writer_error = None
+        self.controller_stage = "writer"
         try:
             intent, _ = await self._run(self.team.writer, json.dumps(payload), writer_context, WriterOutput)
             validate_writer(intent, payload)
-        except Exception:
+            self.diagnostics.stage("writer", "accepted", "Writer")
+        except Exception as error:
             fallback = True
-            self.event("writer_rejected", "Writer", reason="invalid_or_unavailable_writer_output")
+            writer_error = failure_details(error)
+            self.diagnostics.stage("writer", "failed", "Writer", error=writer_error)
+            self.event("writer_rejected", "Writer", reason=writer_error["category"], error=writer_error)
+            self.diagnostics.stage("writer", "fallback", "Writer", error=writer_error)
             intent = WriterOutput(candidate_ids=payload["candidate_ids"], evidence_ids=payload["evidence_ids"], validation_steps=["task_pilot", "check_index_versions"])
         return {"status": payload["status"], "decision": decision, "markdown": render_recommendation(decision, intent),
-                "writer_fallback": fallback, "plan": self.plan.model_dump()}
+                "writer_fallback": fallback, "writer_error": writer_error, "plan": self.plan.model_dump()}
 
     async def run(self, user_input: str):
         if self.started:
             raise ValueError("Create a fresh workflow per user request.")
         self.started = True
+        log_metadata("run_started", run_id=self.run_id, input_hash=hashlib.sha256(user_input.encode()).hexdigest())
         try:
             result = await asyncio.wait_for(self._workflow(user_input), timeout=self.limits.timeout_seconds)
         except asyncio.TimeoutError:
+            self.blocked("workflow_timeout")
             self.event("workflow_failed", "Lead", reason="workflow_timeout")
             result = {"status": "error", "error": "workflow_timeout",
                       "markdown": "Research reached its execution deadline. No incomplete recommendation is supplied."}
         except asyncio.CancelledError:
             self.event("workflow_cancelled", "Lead")
+            self.diagnostics.finish(cancelled=True)
+            log_metadata("run_cancelled", run_id=self.run_id)
             raise
         except Exception as error:
             code = str(error) if isinstance(error, WorkflowError) else "agent_or_tool_execution_failed"
+            self.blocked(code, error)
             self.event("workflow_failed", "Lead", reason=code)
             result = {"status": "error", "error": code, "markdown": "Research could not complete safely. Check configuration and retry; no unverified recommendation is supplied."}
         finally:
             self._closed = True
-        return {**result, "trace": deepcopy(self.trace), "reviews": deepcopy(self.reviews),
+        self.diagnostics.finish()
+        diagnostics = self.diagnostics.snapshot()
+        diagnostics["blocking_failure"] = self.diagnostics.states.get(self.controller_stage) if result.get("error") or result["status"] == "clarification_needed" else None
+        log_metadata("run_finished", run_id=self.run_id, status=result["status"], error=result.get("error"),
+                     writer_fallback=result.get("writer_fallback"), snapshot_id=self.snapshot.get("snapshot_id") if self.snapshot else None)
+        return {**result, "run_id": self.run_id, "diagnostics": diagnostics, "classification": self.classification,
+                "trace": deepcopy(self.trace), "reviews": deepcopy(self.reviews),
                 "researcher_runs": self.researcher_count, "researcher_results": deepcopy(self.role_results),
                 "official_specifications": deepcopy(self.official_reports),
                 "clarification_suggestions": list(self.clarification_suggestions)}

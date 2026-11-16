@@ -8,6 +8,7 @@ import math
 import os
 import secrets
 import time
+import uuid
 from collections import deque
 from copy import deepcopy
 from decimal import Decimal
@@ -23,6 +24,7 @@ from modelmatch_schemas import OrchestrationLimits, ParsedConstraint, StatedNumb
 from orchestration import ModelMatchWorkflow
 from tools.decision import decide
 from tools.official_specs import public_diagnostics
+from tools.run_diagnostics import failure_details, log_metadata
 
 ROOT = Path(__file__).parent
 CONTRACT = "provisional-modelmatch-chat-v1"
@@ -173,7 +175,6 @@ class WebWorkflow(ModelMatchWorkflow):
         output = await super().lead(stage, payload)
         if stage == "parse":
             output = self.web_input.apply(output)
-            self.panel.emit({"type": "interpretation", "plan": output.model_dump()})
         return output
 
 
@@ -186,15 +187,15 @@ def bounded(value, limit=16000):
 class WebHooks(PanelHooks):
     """Keep nested call identities and actual hook execution intervals."""
 
-    def __init__(self, emit):
-        super().__init__(AgentContexts(), emit)
+    def __init__(self, emit, run_id=None):
+        self.run_id = run_id or str(uuid.uuid4())
+        def correlated(event):
+            emit({**event, "run_id": self.run_id})
+        super().__init__(AgentContexts(), correlated)
         self.calls = []
 
     def activity(self, agent, text):
         super().activity(agent, text)
-        if agent in ("Decision Tool", "Writer"):
-            self.emit({"type": "stage", "agent": agent, "stage": agent,
-                       "status": "failed" if "rejected" in text else "completed" if "completed" in text else "running"})
 
     async def on_llm_start(self, context, agent, system_prompt, input_items):
         await super().on_llm_start(context, agent, system_prompt, input_items)
@@ -210,7 +211,7 @@ class WebHooks(PanelHooks):
                 args = json.loads(row.get("arguments", "{}"))
             except ValueError:
                 args = {"unparsed": row.get("arguments")}
-            call = {"call_id": row.get("call_id"), "agent": agent.name,
+            call = {"call_id": row.get("call_id"), "agent": agent.name, "run_id": self.run_id,
                     "context_id": context.context.context_id, "tool": row.get("name"),
                     "arguments": bounded(args), "status": "proposed", "result": None,
                     "started_at": None, "ended_at": None, "elapsed_seconds": None}
@@ -237,8 +238,7 @@ class WebHooks(PanelHooks):
             self.emit({"type": "tool_trace", "call": deepcopy(call)})
 
     async def on_agent_end(self, context, agent, output):
-        await super().on_agent_end(context, agent, output)
-        self.emit({"type": "stage", "agent": agent.name, "stage": context.context.stage, "status": "completed"})
+        self.activity(agent.name, "Generation completed; controller validation is pending.")
 
     def finish(self, success):
         for call in self.calls:
@@ -300,6 +300,9 @@ class AnalysisService:
         else:
             from vertex_runtime import CallBudget, VertexConfig, create_models
             config = await asyncio.to_thread(VertexConfig.from_environment, root=ROOT)
+            log_metadata("provider_configuration", run_id=hooks.run_id, project=config.project, location=config.location,
+                         lead_writer_model=config.model, researcher_model=config.researcher_model,
+                         max_output_tokens=config.max_output_tokens, timeout_seconds=config.timeout_seconds, num_retries=0)
             budget = CallBudget(max_calls=24)
             model, researcher = create_models(config, budget)
             settings = config.settings()
@@ -345,20 +348,28 @@ def install_modelmatch(app):
         return {"mode": "offline_synthetic" if service.offline else "live_vertex", "chat_contract": CONTRACT,
                 "contract_verified": False, "session_ttl_seconds": service.ttl, "grounding_enabled": False}
 
-    async def execute(body, emit):
-        hooks = WebHooks(emit)
+    async def execute(body, emit, run_id=None):
+        hooks = WebHooks(emit, run_id)
         try:
             result, prepared = await asyncio.wait_for(service.run(body, hooks), timeout=190)
+            result.setdefault("run_id", hooks.run_id)
             hooks.finish(result.get("status") not in ("error", "insufficient_evidence"))
             result["tool_calls"] = hooks.calls
             key = service.remember(result, prepared)
-            return {"analysis_id": key, "result": result}
+            return {"analysis_id": key, "result": result, "run_id": hooks.run_id}
+        except asyncio.CancelledError:
+            log_metadata("request_cancelled", run_id=hooks.run_id)
+            raise
+        except Exception as error:
+            log_metadata("request_failed", run_id=hooks.run_id, error=failure_details(error))
+            raise
         finally:
             hooks.finish(False)
 
     @router.post("/api/modelmatch/analyze")
     async def analyze(body: WebInput):
         service.acquire(body.approve_live)
+        run_id = str(uuid.uuid4())
         queue = asyncio.Queue(maxsize=512)
         overflow = False
         def emit(event):
@@ -366,26 +377,26 @@ def install_modelmatch(app):
             if overflow:
                 return
             try:
-                queue.put_nowait(public_diagnostics(event))
+                queue.put_nowait(public_diagnostics({**event, "run_id": run_id}))
             except asyncio.QueueFull:
                 overflow = True
                 task.cancel()
         async def work():
             try:
-                result = await execute(body, emit)
+                result = await execute(body, emit, run_id)
                 emit({"type": "done", **result})
             except asyncio.CancelledError:
                 raise
-            except Exception:
-                emit({"type": "error", "message": "Analysis could not start or complete. Check the existing Vertex project, ADC credentials, and AA API configuration. No synthetic results were substituted."})
+            except Exception as error:
+                emit({"type": "error", "error": failure_details(error), "message": "Analysis could not start or complete. Check the existing Vertex project, ADC credentials, and AA API configuration. No synthetic results were substituted."})
         task = asyncio.create_task(work())
         task.add_done_callback(lambda _: setattr(service, "active", service.active - 1))
         async def events():
             try:
-                yield 'data: {"type":"start"}\n\n'
+                yield "data: " + json.dumps({"type": "start", "run_id": run_id}) + "\n\n"
                 while True:
                     if overflow:
-                        yield 'data: {"type":"error","message":"Event capacity exceeded. Analysis stopped."}\n\n'
+                        yield "data: " + json.dumps({"type": "error", "run_id": run_id, "message": "Event capacity exceeded. Analysis stopped."}) + "\n\n"
                         break
                     try:
                         event = await asyncio.wait_for(queue.get(), 10)
@@ -399,7 +410,7 @@ def install_modelmatch(app):
                 task.cancel()
                 await asyncio.gather(task, return_exceptions=True)
         return StreamingResponse(events(), media_type="text/event-stream",
-            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "X-ModelMatch-Run-ID": run_id})
 
     @router.post("/api/modelmatch/recalculate")
     async def recalculate(body: RecalculateInput):
@@ -413,6 +424,7 @@ def install_modelmatch(app):
         decision = decide(saved["prepared"], task_type=original["decision"]["weights"]["task_type"], user_alpha=body.user_alpha)
         original_alpha = original["decision"]["weights"]["alpha"]
         return {"analysis_id": body.analysis_id, "decision": decision, "research_rerun": False,
+                "run_id": original.get("run_id"),
                 "writer_alpha": original_alpha, "writer_explanation_stale": original_alpha != decision["weights"]["alpha"]}
 
     @router.post("/chat")
@@ -420,10 +432,11 @@ def install_modelmatch(app):
         values = body.model_dump(exclude={"message", "question"})
         request = WebInput(question=body.message, **values)
         service.acquire(request.approve_live)
+        run_id = str(uuid.uuid4())
         try:
-            response = await execute(request, lambda event: None)
+            response = await execute(request, lambda event: None, run_id)
         except Exception:
-            raise HTTPException(503, "Analysis could not complete safely.") from None
+            raise HTTPException(503, "Analysis could not complete safely.", headers={"X-ModelMatch-Run-ID": run_id}) from None
         finally:
             service.active -= 1
         return {"contract": CONTRACT, "contract_verified": False, "reply": response["result"]["markdown"],

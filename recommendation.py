@@ -33,13 +33,21 @@ def writer_payload(decision):
             "weights": decision["weights"], "assumptions": decision["assumptions"]}
 
 
+class WriterValidationError(ValueError):
+    """A stable rule identifier without model-generated text."""
+
+    def __init__(self, code, message):
+        self.validation_code = code
+        super().__init__(message)
+
+
 def validate_writer(intent: WriterOutput, payload):
     if intent.candidate_ids != payload["candidate_ids"]:
-        raise ValueError("Writer cannot change candidate IDs or ranking order.")
+        raise WriterValidationError("candidate_order_mismatch", "Writer cannot change candidate IDs or ranking order.")
     if set(intent.evidence_ids) != set(payload["evidence_ids"]):
-        raise ValueError("Writer must preserve the canonical source references.")
+        raise WriterValidationError("evidence_set_mismatch", "Writer must preserve the canonical source references.")
     if not intent.validation_steps:
-        raise ValueError("Writer must request further validation.")
+        raise WriterValidationError("validation_steps_missing", "Writer must request further validation.")
 
 
 def _text(value):

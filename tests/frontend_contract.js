@@ -24,6 +24,17 @@ globalThis.document={createElement:()=>node(),querySelectorAll:()=>[],getElement
 globalThis.AbortController=class {constructor(){this.signal={listeners:[],addEventListener(name,cb){this.listeners.push(cb);}};}abort(){for(const cb of this.signal.listeners)cb();}};
 globalThis.clearTimeout=()=>{};
 globalThis.TextDecoder=class {decode(value){return typeof value==='string'?value:'';}};
+renderProgress=()=>{};
+state.stages=new Map();
+progress('Lead','completed','review',false);
+assert(state.stages.get('review')==='validating','Generation completion is not controller acceptance');
+progress('Lead','accepted','review',true);
+progress('Lead','skipped','review_final',false);
+assert(state.stages.get('review')==='accepted','Unused final review cannot overwrite accepted initial review');
+progress('Writer','fallback','writer',false);
+assert(state.stages.get('writer')==='fallback','Fallback cannot count as accepted Writer output');
+finishProgress({diagnostics:{stages:{review:{agent:'Lead',stage:'review',status:'failed'},decision:{agent:'Decision Tool',stage:'decision',status:'not_reached'}}}});
+assert(state.stages.get('review')==='failed' && state.stages.get('decision')==='not_reached','A rejected review does not imply a decision ran');
 state.analysisId='synthetic-id';state.original=fixture;
 const original=JSON.stringify(fixture);const requests=[];
 renderDecision=function(d){state.decision=d;};
@@ -55,8 +66,8 @@ recalculate(.7).then(()=>{
   globalThis.fetch=()=>Promise.resolve({ok:true,body:{getReader:()=>({read:()=>Promise.resolve({done:false,value:'data: {"type":"stage","agent":"Researcher A","stage":"research","status":"running"}\n\ndata: {"type":"error","message":"Synthetic stream failure"}\n\n'}),cancel:()=>Promise.resolve(),releaseLock(){}})}});
   return analyze();
 }).then(()=>{
-  assert(state.stages.get('A')==='failed','Observed running stage fails on stream error');
-  assert(state.stages.get('writer')==='skipped','Unreached Writer is skipped');
+  assert(state.stages.get('A')==='interrupted','Stream errors do not prove that a running agent failed');
+  assert(state.stages.get('writer')==='not_reached','Unreached Writer is distinct from a policy skip');
   assert(!state.busy && document.getElementById('status').textContent==='Synthetic stream failure','Error releases controls');
   globalThis.fetch=(path,options)=>new Promise((resolve,reject)=>options.signal.addEventListener('abort',()=>{const error=new Error('Stopped');error.name='AbortError';reject(error);}));
   const pending=analyze();state.controller.abort();return pending;
