@@ -13,6 +13,7 @@ from dataclasses import asdict, replace
 
 from agents import ModelBehaviorError, RunConfig, RunHooks, Runner
 from pydantic import ValidationError
+from openai.types.shared import Reasoning
 
 from modelmatch_agents import create_team
 from modelmatch_schemas import (
@@ -21,7 +22,8 @@ from modelmatch_schemas import (
 from tools.artificial_analysis import numeric, utc_now
 from tools.decision import TASK_DEFAULTS, decide, evaluate_operations, resolve_weights
 from tools.model_evidence import OperationalRequirement, RelevanceDecision, Workload, build_candidates
-from tools.run_diagnostics import CALL_CONTEXT, RunDiagnostics, failure_details, log_metadata
+from tools.run_diagnostics import (CALL_CONTEXT, OUTPUT_DIAGNOSTICS, ModelRequestTimeout,
+                                   RunDiagnostics, failure_details, log_metadata)
 from tools.task_classification import POLICY_VERSION as CLASSIFICATION_VERSION, resolve_task_type
 
 
@@ -181,6 +183,8 @@ class ModelMatchWorkflow:
     async def _run(self, agent, prompt, context, output_type):
         stage = context.stage if context.role == "Lead" else context.role if context.role in ("A", "B", "C") else "writer"
         token = CALL_CONTEXT.set({"run_id": self.run_id, "stage": stage, "agent": agent.name, "context_id": context.context_id})
+        output_observations = {}
+        observation_token = OUTPUT_DIAGNOSTICS.set(output_observations)
         self.diagnostics.stage(stage, "running", agent.name, context_id=context.context_id)
         try:
             result = await self.runner.run(agent, prompt, context=context, hooks=self.hooks,
@@ -194,9 +198,14 @@ class ModelMatchWorkflow:
             self.diagnostics.stage(stage, "cancelled", agent.name, context_id=context.context_id)
             raise
         except Exception as error:
+            if stage == "parse" and output_observations and isinstance(error, (ModelBehaviorError, ValidationError)):
+                error.modelmatch_output_diagnostics = dict(output_observations)
             self.diagnostics.stage(stage, "failed", agent.name, error=failure_details(error))
+            if failure_details(error)["category"] == "timeout" and not isinstance(error, ModelRequestTimeout):
+                raise ModelRequestTimeout("The model request deadline was exceeded.") from error
             raise
         finally:
+            OUTPUT_DIAGNOSTICS.reset(observation_token)
             CALL_CONTEXT.reset(token)
 
     def blocked(self, code, error=None):
@@ -225,14 +234,16 @@ class ModelMatchWorkflow:
         self._enter_lead_stage(stage)
         self._lead_running = True
         agent = self.team.lead
+        original_settings = agent.model_settings
         output_type = LEAD_OUTPUT_TYPES[stage]
+        message = {"role": "user", "content": json.dumps({**payload, "stage": stage}, allow_nan=False)}
+        inputs = [*(self.history or []), message]
         # These are installed SDK Agent fields, not invented Runner parameters.
         # A workflow owns one Lead and never runs its stages concurrently.
         agent.output_type = output_type
-        agent.model_settings = replace(agent.model_settings,
-            parallel_tool_calls=stage in ("dispatch", "followup"), tool_choice=None)
-        message = {"role": "user", "content": json.dumps({**payload, "stage": stage}, allow_nan=False)}
-        inputs = [*(self.history or []), message]
+        agent.model_settings = replace(original_settings,
+            parallel_tool_calls=stage in ("dispatch", "followup"), tool_choice=None,
+            reasoning=Reasoning(effort="low") if stage == "parse" else original_settings.reasoning)
         self.event("lead_stage_started", "Lead", stage=stage, output_schema=output_type.__name__)
         try:
             try:
@@ -246,6 +257,7 @@ class ModelMatchWorkflow:
             self.event("lead_stage_completed", "Lead", stage=stage)
             return output
         finally:
+            agent.model_settings = original_settings
             self._lead_running = False
 
     def prepared(self):
@@ -520,8 +532,13 @@ class ModelMatchWorkflow:
         log_metadata("run_started", run_id=self.run_id, input_hash=hashlib.sha256(user_input.encode()).hexdigest())
         try:
             result = await asyncio.wait_for(self._workflow(user_input), timeout=self.limits.timeout_seconds)
-        except asyncio.TimeoutError:
-            self.blocked("workflow_timeout")
+        except ModelRequestTimeout as error:
+            self.blocked("model_request_timeout", error)
+            self.event("workflow_failed", "Lead", reason="model_request_timeout")
+            result = {"status": "error", "error": "model_request_timeout",
+                      "markdown": "A model request reached its deadline. The complete workflow deadline was not inferred from this failure."}
+        except asyncio.TimeoutError as error:
+            self.blocked("workflow_timeout", error)
             self.event("workflow_failed", "Lead", reason="workflow_timeout")
             result = {"status": "error", "error": "workflow_timeout",
                       "markdown": "Research reached its execution deadline. No incomplete recommendation is supplied."}

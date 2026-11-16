@@ -1,6 +1,7 @@
 """Metadata-only run diagnostics; never log prompts, outputs or hidden reasoning."""
 
 import json
+import asyncio
 import logging
 import os
 import time
@@ -10,6 +11,7 @@ from contextvars import ContextVar
 from datetime import datetime, timezone
 
 CALL_CONTEXT = ContextVar("modelmatch_call_context", default={})
+OUTPUT_DIAGNOSTICS = ContextVar("modelmatch_output_diagnostics", default=None)
 logger = logging.getLogger("modelmatch.reliability")
 if not logger.handlers:
     logger.addHandler(logging.StreamHandler())
@@ -21,18 +23,40 @@ def now():
     return datetime.now(timezone.utc).isoformat()
 
 
+class ModelRequestTimeout(TimeoutError):
+    """A per-model deadline, distinct from the controller's total deadline."""
+
+
+def exception_chain(error):
+    chain, seen = [], set()
+    while error is not None and id(error) not in seen and len(chain) < 16:
+        seen.add(id(error))
+        chain.append(error)
+        error = error.__cause__
+    return chain
+
+
+def is_timeout(error):
+    return isinstance(error, (TimeoutError, httpx.TimeoutException)) or type(error).__name__ in ("APITimeoutError", "DeadlineExceeded")
+
+
 def failure_details(error):
     """Classify exceptions without their messages, values or provider bodies."""
     from agents import ModelBehaviorError
     from pydantic import ValidationError
 
-    cause = error
-    while getattr(cause, "__cause__", None) is not None:
-        cause = cause.__cause__
+    chain = exception_chain(error)
+    # Cancellation created internally by wait_for must not erase its TimeoutError.
+    # An outward CancelledError, however, remains genuine cooperative cancellation.
+    principal = next((item for item in chain if not isinstance(item, ModelRequestTimeout)
+                      and (is_timeout(item) or isinstance(getattr(item, "status_code", None), int))), chain[-1])
+    cause = error if isinstance(error, asyncio.CancelledError) else principal
     name = type(cause).__name__
     status = getattr(cause, "status_code", None)
     category = "execution_error"
-    if isinstance(cause, (TimeoutError, httpx.TimeoutException)) or name in ("APITimeoutError", "DeadlineExceeded"):
+    if isinstance(cause, asyncio.CancelledError):
+        category = "cancelled"
+    elif is_timeout(cause):
         category = "timeout"
     elif isinstance(cause, (ValidationError, ModelBehaviorError, json.JSONDecodeError)):
         category = "schema_validation_error"
@@ -46,6 +70,9 @@ def failure_details(error):
             "status_code": status if isinstance(status, int) else None,
             "validation_code": getattr(cause, "validation_code", None),
             "rule": getattr(error, "rule", None)}
+    result["cause_chain"] = [{"exception_type": type(item).__name__,
+                               "status_code": getattr(item, "status_code", None) if isinstance(getattr(item, "status_code", None), int) else None}
+                              for item in chain]
     if isinstance(cause, ValidationError):
         known = {"industry", "task_description", "task_quote", "task_type", "user_alpha", "constraints", "workload",
                  "clarification_questions", "metric", "target", "hard", "statistic", "source_quote", "hard_source_quote",
@@ -56,6 +83,46 @@ def failure_details(error):
                                    for e in cause.errors(include_input=False, include_context=False, include_url=False)[:8]]
     if isinstance(cause, json.JSONDecodeError):
         result.update(json_line=cause.lineno, json_column=cause.colno)
+    if category == "schema_validation_error":
+        output = next((getattr(item, "modelmatch_output_diagnostics", None) for item in chain
+                       if getattr(item, "modelmatch_output_diagnostics", None)), None)
+        if output:
+            result["output_diagnostics"] = output
+            result["category"] = output["failure_category"] or category
+    return result
+
+
+def inspect_lead_output(response, finish_reason):
+    """Inspect syntax and the unchanged ParsedPlan contract without retaining text."""
+    from pydantic import ValidationError
+    from modelmatch_schemas import ParsedPlan
+
+    parts = [part for item in getattr(response, "output", []) if getattr(item, "type", None) == "message"
+             for part in getattr(item, "content", [])]
+    text = "".join(part.text for part in parts if getattr(part, "type", None) == "output_text")
+    limited = finish_reason in ("length", "MAX_TOKENS", "max_tokens")
+    result = {"finish_reason": finish_reason, "response_characters": len(text),
+              "markdown_fence_present": text.lstrip().startswith("```"),
+              "refusal_present": any(getattr(part, "type", None) == "refusal" for part in parts),
+              "generation_status": "incomplete_generation" if limited else "unknown" if finish_reason is None else "finished",
+              "validation_category": None, "failure_category": None}
+    try:
+        parsed_json = json.loads(text)
+    except (ValueError, RecursionError) as error:
+        result["validation_category"] = "malformed_json"
+        if isinstance(error, json.JSONDecodeError):
+            result.update(json_line=error.lineno, json_column=error.colno, json_offset=error.pos)
+    else:
+        result["missing_contract_fields"] = [name for name in ParsedPlan.model_fields if name not in parsed_json] if isinstance(parsed_json, dict) else []
+        try:
+            ParsedPlan.model_validate_json(text, strict=True)
+        except ValidationError as error:
+            result["validation_category"] = "schema_validation_error"
+            result["schema_errors"] = failure_details(error).get("schema_errors", [])
+        else:
+            result["validation_category"] = "valid"
+    if result["validation_category"] != "valid":
+        result["failure_category"] = "incomplete_generation" if limited else "provider_error" if result["refusal_present"] else result["validation_category"]
     return result
 
 

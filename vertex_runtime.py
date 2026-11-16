@@ -16,7 +16,9 @@ from pathlib import Path
 from agents import Model, ModelSettings
 from dotenv import load_dotenv
 from contextvars import ContextVar
-from tools.run_diagnostics import CALL_CONTEXT, failure_details, log_metadata, now, response_metadata
+from tools.run_diagnostics import (CALL_CONTEXT, OUTPUT_DIAGNOSTICS, ModelRequestTimeout,
+                                   failure_details, inspect_lead_output,
+                                   log_metadata, now, response_metadata)
 
 PROVIDER_METADATA = ContextVar("modelmatch_provider_metadata", default=None)
 
@@ -164,12 +166,20 @@ class MeteredModel(Model):
             settings = replace(model_settings, max_tokens=min(model_settings.max_tokens or self.config.max_output_tokens, self.config.max_output_tokens),
                                extra_args={**(model_settings.extra_args or {}), "num_retries": 0})
             record["settings"] = {"max_output_tokens": settings.max_tokens, "temperature": settings.temperature,
+                "reasoning_effort": getattr(settings.reasoning, "effort", None),
                 "top_p": settings.top_p, "timeout_seconds": self.config.timeout_seconds, "num_retries": 0}
             record["adapter_invoked"] = True
             response = await asyncio.wait_for(self.inner.get_response(system_instructions, input, settings, tools,
                 output_schema, handoffs, tracing, **kwargs), timeout=self.config.timeout_seconds)
             record.update(status="success", usage=token_usage(response.usage), **response_metadata(response),
                           tool_calls=[getattr(item, "name", None) for item in response.output if getattr(item, "type", None) == "function_call"])
+            if CALL_CONTEXT.get().get("stage") == "parse" and record["output_schema"] == "ParsedPlan":
+                observed = inspect_lead_output(response, metadata.get("finish_reason", record["finish_reason"]))
+                record["output_diagnostics"] = observed
+                target = OUTPUT_DIAGNOSTICS.get()
+                if target is not None:
+                    target.clear()
+                    target.update(observed)
             if self.budget.capture_responses:
                 outputs = []
                 for item in response.output:
@@ -188,6 +198,8 @@ class MeteredModel(Model):
             raise
         except Exception as error:
             record.update(status="failed", error=safe_error(error), failure=failure_details(error))
+            if failure_details(error)["category"] == "timeout" and not isinstance(error, ModelRequestTimeout):
+                raise ModelRequestTimeout("The model request deadline was exceeded.") from error
             raise
         finally:
             record.update(metadata)

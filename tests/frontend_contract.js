@@ -26,6 +26,21 @@ globalThis.clearTimeout=()=>{};
 globalThis.TextDecoder=class {decode(value){return typeof value==='string'?value:'';}};
 renderProgress=()=>{};
 state.stages=new Map();
+progress('Lead','running','parse',false);
+progress('Lead','failed','parse',false);
+for (const stage of ['dispatch','followup','review_final']) progress('Lead','not_reached',stage,false);
+assert(state.stages.get('lead')==='failed','Observed production parse failure survives unreached dispatch cleanup');
+finishProgress({diagnostics:{stages:{parse:{agent:'Lead',stage:'parse',status:'failed'},dispatch:{agent:'Lead',stage:'dispatch',status:'not_reached'}}}});
+assert(state.stages.get('lead')==='failed','Final state replay preserves the actual failed Lead stage');
+for (const status of ['completed','cancelled','interrupted','failed']) {
+  state.stages=new Map(); progress('Lead',status,'parse',true); progress('Lead','not_reached','dispatch',false);
+  assert(state.stages.get('lead')===status,'Cleanup cannot erase an observed terminal state');
+}
+state.stages=new Map();progress('Lead','skipped','parse');
+assert(state.stages.get('lead')==='skipped','Intentional skip stays distinct from not reached');
+assert(analysisError({error:'model_request_timeout'}).includes('model request'),'Model timeout remains separate from workflow timeout');
+assert(analysisError({error:'workflow_timeout'}).includes('overall time'),'Workflow timeout remains separate');
+assert(analysisError({diagnostics:{blocking_failure:{error:{output_diagnostics:{failure_category:'incomplete_generation'}}}}}).includes('output limit'),'Incomplete generation uses observed diagnostic evidence');
 progress('Lead','completed','review',false);
 assert(state.stages.get('review')==='validating','Generation completion is not controller acceptance');
 progress('Lead','accepted','review',true);

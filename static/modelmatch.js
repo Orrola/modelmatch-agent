@@ -108,6 +108,8 @@ function progress(agent, status, stage = '', accepted = null) {
     : /^Researcher ([ABC])/.exec(agent)?.[1] || (agent === 'Decision Tool' ? 'decision' : agent === 'Writer' ? 'writer' : agent === 'Lead' ? 'lead' : null);
   if (!key) return;
   const normalized = status === 'completed' && accepted === false ? 'validating' : status;
+  // Cleanup for a later phase cannot erase an observed outcome in this node.
+  if (['not_reached', 'skipped'].includes(normalized) && !['pending', 'not_reached', 'skipped', undefined].includes(state.stages.get(key))) return;
   if (stageStates[normalized]) state.stages.set(key, normalized);
   renderProgress();
 }
@@ -404,6 +406,9 @@ function apiError(detail) {
   return 'The request could not complete. Please check your inputs.';
 }
 function analysisError(result) {
+  const output = result.diagnostics?.blocking_failure?.error?.output_diagnostics;
+  if (output?.failure_category === 'incomplete_generation') return 'The Lead response reached the output limit before a valid plan was available. No synthetic results were substituted.';
+  if (output?.failure_category === 'malformed_json') return 'The Lead response was not valid JSON. The analysis stopped safely. No synthetic results were substituted.';
   const failed = (result.integration_usage?.records || []).find(record => record.status === 'failed');
   const category = failed?.error?.category;
   const messages = {
@@ -415,6 +420,7 @@ function analysisError(result) {
     execution_budget_exceeded: 'The analysis reached its request or prompt limit before it could complete.',
   };
   const codes = {
+    model_request_timeout: 'A model request exceeded its time limit. The analysis did not complete.',
     snapshot_unavailable: 'The Artificial Analysis snapshot could not be loaded. Check AA_API_KEY, API access, and connectivity.',
     workflow_timeout: 'The analysis exceeded its overall time limit.',
     lead_output_contract_failed: 'The Lead returned an invalid structured response. The analysis stopped safely.',

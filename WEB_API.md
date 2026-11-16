@@ -2,6 +2,44 @@
 
 ## Reliability metadata
 
+Stage 1 keeps per-model deadlines separate from the complete workflow deadline:
+`model_request_timeout` identifies a propagated model-call timeout, while
+`workflow_timeout` identifies expiry of the workflow wrapper. Diagnostics preserve the
+principal timeout and a metadata-only cause chain; an internal cancellation does not
+replace the timeout, and outward cooperative cancellation remains distinct.
+
+Lead parse records may include `output_diagnostics`: response character count, a
+Markdown-fence flag, JSON error coordinates, safe schema paths and generation/validation
+categories. `length` termination plus invalid output is `incomplete_generation`; syntax
+and schema outcomes remain separately visible. Missing finish metadata stays unknown.
+These observations never repair, retry or accept an output. Strict SDK parsing and
+Lead semantic checks still determine acceptance. No raw response or reasoning text is
+included. Lead parse now temporarily uses LOW reasoning on the existing model; its
+settings are restored in finally on success, error or cancellation. Dispatch, researchers,
+Review and Writer retain their prior settings. Output limits, deadlines and retries are
+unchanged. This is local offline validation, not a deployed or live-tested change.
+
+The isolated experiment can be prepared without credentials or model calls:
+
+```sh
+.venv/bin/python -m scripts.lead_parse_experiment --manifest .cache/stage2-lead-parse/cases.json
+```
+
+Supply a private manifest with four `cases` named `financial`, `coding`,
+`customer_support`, and `ecommerce`. Each case needs a `request` using the existing
+WebInput fields, `provenance`, and `expected_input_hash` (SHA256 of WebInput.prompt()).
+An optional `baseline` must match that hash, model, 2048 output limit and 30-second
+timeout. Optional `expectations` provide independent industry/task/constraint/workload
+checks. Raw requests and artifacts belong in ignored local storage, not the submission.
+
+The command defaults to preflight. Live execution additionally requires both `--live`
+and `--approve-billable`, only after separate authorization. It permits at most four
+sequential parse calls, one per case, with no retries, AA, Grounding or full workflow.
+The first failed case stops the batch. SDK acceptance, observed eight-field presence,
+business validation and extraction correctness are separate results. Missing semantic
+expectations require manual review; historical comparisons are not randomized A/B
+evidence. Never treat missing usage as zero or a successful parse as a correct recommendation.
+
 The existing request bodies, endpoints and SSE framing are preserved. Additive fields
 include a server-generated `run_id` on SSE events, final results and `/chat` envelopes;
 streaming responses also expose `X-ModelMatch-Run-ID`. `/run` forwards that same identity.
