@@ -212,8 +212,9 @@ class ModelMatchWorkflow:
             CALL_CONTEXT.reset(token)
 
     def blocked(self, code, error=None):
+        target_details = getattr(error, "target_diagnostics", {}) if isinstance(error, WorkflowError) else {}
         self.diagnostics.stage(self.controller_stage, "failed", code=code, rule=getattr(error, "rule", code),
-                               error=failure_details(error) if error else None)
+                               error=failure_details(error) if error else None, **target_details)
 
     def research_tool_enabled(self, role):
         """SDK tool visibility follows controller state, not a model's stage claim."""
@@ -350,9 +351,7 @@ class ModelMatchWorkflow:
         expected = self.allowed[role]
         if expected and (task != expected.task or set(model_ids) != set(expected.model_ids)):
             raise WorkflowError("followup_scope_mismatch")
-        catalog_ids = {row["id"] for page in self.snapshot["pages"] for row in page["data"]}
-        if not set(model_ids) <= catalog_ids:
-            raise WorkflowError("unknown_model_id")
+        self.validate_followup_targets({role: model_ids})
         self.dispatched.add(role)
         self.researcher_count += 1
         context = AgentCallContext(self, role, str(uuid.uuid4()), round_number=int(self.lead_context.stage == "followup"), model_ids=sorted(set(model_ids)))
@@ -402,7 +401,78 @@ class ModelMatchWorkflow:
                 "capability_index_version": "unknown unless separately verified",
                 "required_gap_reasons": reasons, "unknown_specifications_retrievable": self.official_service is not None,
                 "controller_followup": self.followup_outcomes,
+                "followup_reference_catalog": self.followup_reference_catalog(prepared),
                 "stopping_rule": "Fixed snapshot; no new source for null indices or official specifications. At most one targeted follow-up round."}
+
+    def followup_reference_catalog(self, prepared):
+        """Bounded references only; never filter the candidate pool or choose tasks."""
+        limit = min(self.limits.evidence_preview_size, 12)
+        gap_limit = 6
+        character_limit = 12000
+        gaps = {}
+        for item in prepared["missing_manifest"]:
+            for field in item["missing_fields"]:
+                record = prepared["evidence"].get(field["evidence_id"])
+                if record and record["model_id"] == item["model_id"] and record["snapshot_id"] == prepared["snapshot_id"]:
+                    key = (field["role"], record["metric"], field["reason"], field["evidence_id"])
+                    gaps.setdefault(item["model_id"], {})[key] = {
+                        "role": field["role"], "metric": record["metric"], "reason": field["reason"],
+                        "required": field["required"], "evidence_status": record["evidence_status"],
+                        "evidence_id": record["evidence_id"]}
+        failed_roles = sorted(role for role in self.errors if role in ("A", "B", "C"))
+        def priority(model_id):
+            fields = gaps.get(model_id, {}).values()
+            return (not any(f["required"] for f in fields), not bool(gaps.get(model_id)), model_id)
+        ids = sorted(prepared["candidates"], key=priority)
+        entries = []
+        characters = size_omissions = 0
+        for model_id in ids:
+            if len(entries) >= limit:
+                break
+            candidate = prepared["candidates"][model_id]
+            fields = sorted(gaps.get(model_id, {}).values(), key=lambda f: (
+                not f["required"], f["role"], f["metric"], f["reason"], f["evidence_id"]))
+            shown = []
+            for field in fields[:gap_limit]:
+                shown.append({**field, "metric": field["metric"][:160], "reason": field["reason"][:160],
+                              "text_truncated": len(field["metric"]) > 160 or len(field["reason"]) > 160})
+            name = candidate["name"]
+            entry = {"model_id": model_id, "name": name[:160] if isinstance(name, str) else None,
+                "name_truncated": isinstance(name, str) and len(name) > 160,
+                "roles": sorted({f["role"] for f in fields} | set(failed_roles)),
+                "failed_researcher_roles": failed_roles, "evidence_gaps": shown,
+                "total_evidence_gaps": len(fields), "gaps_truncated": len(fields) > gap_limit}
+            size = len(json.dumps(entry, ensure_ascii=True))
+            if characters + size > character_limit:
+                size_omissions += 1
+                continue
+            characters += size
+            entries.append(entry)
+        return {"snapshot_id": prepared["snapshot_id"], "max_models": limit, "max_gaps_per_model": gap_limit,
+            "max_entry_characters": character_limit, "entry_characters": characters,
+            "size_omissions": size_omissions,
+            "total_models": len(ids), "returned_models": len(entries), "omitted_models": len(ids) - len(entries),
+            "models_with_evidence_gaps": len(gaps), "truncated": len(ids) > len(entries),
+            "is_candidate_filter": False, "sort_policy": "required_gaps_first_then_optional_gaps_then_exact_model_id",
+            "scope_policy": "References are not research instructions. Omitted models remain in the full snapshot. "
+                "Use exact current-snapshot IDs only; never infer IDs from names. An explicitly authorized empty "
+                "model_ids list means the full shared catalog, not an automatic repair for invalid IDs. "
+                "Fixed-snapshot missing values remain unknown; rereading them cannot create evidence.",
+            "entries": entries}
+
+    def validate_followup_targets(self, targets):
+        """Reject invalid references atomically and retain metadata without target text."""
+        catalog_ids = {row["id"] for page in self.snapshot["pages"] for row in page["data"]}
+        invalid = {role: set(ids) - catalog_ids for role, ids in targets.items()}
+        affected = sorted(role for role, ids in invalid.items() if ids)
+        if affected:
+            details = {"snapshot_id": self.snapshot["snapshot_id"], "affected_roles": affected,
+                       "invalid_target_count": len(set().union(*(invalid[role] for role in affected)))}
+            log_metadata("followup_target_rejected", run_id=self.run_id,
+                         code="unknown_model_id", rule="unknown_model_id", **details)
+            error = WorkflowError("unknown_model_id")
+            error.target_diagnostics = details
+            raise error
 
     async def _dispatch(self, stage, tasks):
         self.controller_stage = stage
@@ -435,13 +505,13 @@ class ModelMatchWorkflow:
         self.diagnostics.stage("followup", "running", dispatch_source="controller")
         jobs = []
         try:
+            if any(not task.model_ids and "model_ids" not in task.model_fields_set for task in tasks):
+                raise WorkflowError("research_dispatch_not_authorized", "full_catalog_scope_not_explicitly_authorized")
             tools = {tool.name: tool for tool in self.team.lead.tools}
             names = [f"research_{task.role.lower()}" for task in tasks]
             if len(set(names)) != len(names) or set(names) != {f"research_{role.lower()}" for role in self.allowed}:
                 raise WorkflowError("research_dispatch_not_authorized")
-            catalog_ids = {row["id"] for page in self.snapshot["pages"] for row in page["data"]}
-            if any(not set(task.model_ids) <= catalog_ids for task in tasks):
-                raise WorkflowError("unknown_model_id")
+            self.validate_followup_targets({task.role: task.model_ids for task in tasks})
             if self.researcher_count + len(tasks) > self.limits.max_researcher_runs:
                 raise WorkflowError("invalid_or_over_budget_followup", "followup_budget_exceeded")
             for name in names:

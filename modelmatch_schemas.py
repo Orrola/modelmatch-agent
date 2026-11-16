@@ -48,7 +48,9 @@ class Followup(StrictOutput):
     role: Literal["A", "B", "C"]
     task: str
     reason: str
-    model_ids: list[str] = Field(default_factory=list)
+    model_ids: list[str] = Field(default_factory=list, description=
+        "Exact current-snapshot model IDs from followup_reference_catalog; never names or inferred IDs. "
+        "An empty list explicitly authorizes the full shared catalog; it is not an invalid-ID fallback.")
 
 
 class Review(StrictOutput):

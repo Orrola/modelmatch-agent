@@ -120,6 +120,11 @@ review: examine the supplied deterministic gaps, model IDs, index versions, task
 constraints and failed runs. The same snapshot is fixed; do not retry irretrievable nulls or
 official specifications that have no configured lookup. Request at most one targeted task per affected role
 only when useful. Give each a reason, model IDs if relevant, and a stopping condition.
+Use followup_reference_catalog for exact current-snapshot model IDs and evidence gaps.
+It is bounded: omitted models still exist. Never put a model name, guessed ID or snapshot ID
+in model_ids. Copy exact IDs from the supplied references. Use [] only when you explicitly
+authorize research over the full shared catalog; never use it to repair an invalid target.
+Missing fixed-snapshot metrics cannot be recovered by repeating the same lookup.
 followup: Python dispatches the exact authorized tasks and model IDs as one parallel SDK tool
 batch. No Lead generation is needed for this stage. Review its controller_followup outcomes
 at review_final; do not call researcher tools during either review stage.
