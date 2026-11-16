@@ -33,7 +33,7 @@ class RecordingModel(ScriptedModel):
 
     async def get_response(self, system_instructions, input, model_settings, tools, output_schema, *args, **kwargs):
         payload = self.payload(input)
-        self.settings_seen.append({"stage": payload.get("stage", "research_or_writer"),
+        self.settings_seen.append({"stage": payload.get("stage", "writer" if output_schema.name() == "WriterOutput" else "research"),
             "reasoning": getattr(model_settings.reasoning, "effort", None), "max_tokens": model_settings.max_tokens,
             "extra_args": model_settings.extra_args,
             "tools": [tool.name for tool in tools]})
@@ -54,7 +54,7 @@ class ParseIsolationTests(unittest.IsolatedAsyncioTestCase):
         return ModelMatchWorkflow(model, model, settings=settings or ModelSettings(max_tokens=2048),
             snapshot_loader=AsyncMock(return_value=snapshot), limits=OrchestrationLimits(timeout_seconds=10))
 
-    async def test_only_parse_uses_low_and_restores_the_same_lead_settings(self):
+    async def test_parse_and_writer_use_low_and_restore_the_same_lead_settings(self):
         model = RecordingModel()
         workflow = self.workflow(model)
         lead = workflow.team.lead
@@ -63,13 +63,13 @@ class ParseIsolationTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result["writer_fallback"])
         self.assertIs(workflow.team.lead, lead)
         self.assertIs(lead.model_settings, original)
-        self.assertTrue(all(r["reasoning"] == ("low" if r["stage"] == "parse" else None) for r in model.settings_seen))
+        self.assertTrue(all(r["reasoning"] == ("low" if r["stage"] in ("parse", "writer") else None) for r in model.settings_seen))
         parse = next(r for r in model.settings_seen if r["stage"] == "parse")
         self.assertEqual(parse["max_tokens"], 2048)
         self.assertEqual(parse["tools"], [])
         self.assertEqual(parse["extra_args"]["allowed_openai_params"], ["reasoning_effort"])
         self.assertTrue(all(not (r["extra_args"] or {}).get("allowed_openai_params")
-                            for r in model.settings_seen if r["stage"] != "parse"))
+                            for r in model.settings_seen if r["stage"] not in ("parse", "writer")))
 
     async def test_parse_permission_preserves_existing_settings_without_mutation(self):
         model = RecordingModel()
@@ -81,15 +81,15 @@ class ParseIsolationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(extra_args["allowed_openai_params"], ["seed"])
         for record in model.settings_seen:
             self.assertEqual(record["extra_args"]["allowed_openai_params"],
-                             ["seed", "reasoning_effort"] if record["stage"] == "parse" else ["seed"])
+                             ["seed", "reasoning_effort"] if record["stage"] in ("parse", "writer") else ["seed"])
             self.assertEqual(record["extra_args"]["timeout"], 30)
             self.assertEqual(record["extra_args"]["num_retries"], 0)
 
-    async def test_existing_non_parse_reasoning_configuration_is_preserved(self):
+    async def test_research_and_review_reasoning_configuration_is_preserved(self):
         model = RecordingModel()
         workflow = self.workflow(model, ModelSettings(max_tokens=2048, reasoning=Reasoning(effort="high")))
         await workflow.run(USER_INPUT)
-        self.assertTrue(all(r["reasoning"] == ("low" if r["stage"] == "parse" else "high") for r in model.settings_seen))
+        self.assertTrue(all(r["reasoning"] == ("low" if r["stage"] in ("parse", "writer") else "high") for r in model.settings_seen))
 
     async def test_schema_and_timeout_failures_restore_settings(self):
         for failure, code in (("schema", "lead_output_contract_failed"), ("timeout", "model_request_timeout")):

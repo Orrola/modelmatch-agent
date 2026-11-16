@@ -8,14 +8,15 @@ import re
 import time
 import uuid
 import hashlib
+import inspect
 from copy import deepcopy
 from dataclasses import asdict, replace
 
-from agents import ModelBehaviorError, RunConfig, RunHooks, Runner
+from agents import ModelBehaviorError, RunConfig, RunHooks, Runner, RunContextWrapper
+from agents.tool_context import ToolContext
 from pydantic import ValidationError
-from openai.types.shared import Reasoning
 
-from modelmatch_agents import create_team
+from modelmatch_agents import create_team, low_thinking_settings
 from modelmatch_schemas import (
     AgentCallContext, LEAD_OUTPUT_TYPES, OrchestrationLimits, ParsedPlan, ResearcherOutput, WriterOutput,
 )
@@ -169,8 +170,10 @@ class ModelMatchWorkflow:
         self._stage = None
         self._completed_stage = None
         self._lead_running = False
+        self._controller_dispatch_active = False
         self._closed = False
         self._authorized_followups = ()
+        self.followup_outcomes = None
         self.clarification_suggestions = []
 
     def event(self, kind, agent, **fields):
@@ -198,7 +201,7 @@ class ModelMatchWorkflow:
             self.diagnostics.stage(stage, "cancelled", agent.name, context_id=context.context_id)
             raise
         except Exception as error:
-            if stage == "parse" and output_observations and isinstance(error, (ModelBehaviorError, ValidationError)):
+            if stage in ("parse", "writer") and output_observations and isinstance(error, (ModelBehaviorError, ValidationError)):
                 error.modelmatch_output_diagnostics = dict(output_observations)
             self.diagnostics.stage(stage, "failed", agent.name, error=failure_details(error))
             if failure_details(error)["category"] == "timeout" and not isinstance(error, ModelRequestTimeout):
@@ -214,14 +217,14 @@ class ModelMatchWorkflow:
 
     def research_tool_enabled(self, role):
         """SDK tool visibility follows controller state, not a model's stage claim."""
-        return (not self._closed and self._lead_running and self._stage in ("dispatch", "followup")
+        return (not self._closed and (self._lead_running or self._controller_dispatch_active) and self._stage in ("dispatch", "followup")
                 and self.lead_context.stage == self._stage and role in self.allowed
                 and self.plan is not None and self.snapshot is not None)
 
     def _enter_lead_stage(self, stage):
         transitions = {None: {"parse"}, "parse": {"dispatch"}, "dispatch": {"review"},
                        "review": {"followup"}, "followup": {"review_final"}, "review_final": set()}
-        if self._closed or self._lead_running or stage not in transitions.get(self._completed_stage, set()):
+        if self._closed or self._lead_running or self._controller_dispatch_active or stage not in transitions.get(self._completed_stage, set()):
             raise WorkflowError("invalid_lead_stage_transition")
         if stage != "parse" and (self.plan is None or self.snapshot is None or self.weights is None):
             raise WorkflowError("lead_stage_prerequisites_missing")
@@ -241,17 +244,10 @@ class ModelMatchWorkflow:
         # These are installed SDK Agent fields, not invented Runner parameters.
         # A workflow owns one Lead and never runs its stages concurrently.
         agent.output_type = output_type
-        extra_args = original_settings.extra_args
-        if stage == "parse":
-            # LiteLLM 1.83.0 lacks reasoning metadata for this Gemini model.
-            # Permit this supported mapping only for the bounded parse request.
-            extra_args = {**(extra_args or {})}
-            extra_args["allowed_openai_params"] = list(dict.fromkeys([
-                *(extra_args.get("allowed_openai_params") or []), "reasoning_effort"]))
-        agent.model_settings = replace(original_settings,
+        stage_settings = low_thinking_settings(original_settings) if stage == "parse" else original_settings
+        agent.model_settings = replace(stage_settings,
             parallel_tool_calls=stage in ("dispatch", "followup"), tool_choice=None,
-            extra_args=extra_args,
-            reasoning=Reasoning(effort="low") if stage == "parse" else original_settings.reasoning)
+        )
         self.event("lead_stage_started", "Lead", stage=stage, output_schema=output_type.__name__)
         try:
             try:
@@ -405,6 +401,7 @@ class ModelMatchWorkflow:
                 "general_index_versions": sorted({str(e["index_version"]) for e in prepared["evidence"].values() if e["index_version"] is not None}),
                 "capability_index_version": "unknown unless separately verified",
                 "required_gap_reasons": reasons, "unknown_specifications_retrievable": self.official_service is not None,
+                "controller_followup": self.followup_outcomes,
                 "stopping_rule": "Fixed snapshot; no new source for null indices or official specifications. At most one targeted follow-up round."}
 
     async def _dispatch(self, stage, tasks):
@@ -417,13 +414,77 @@ class ModelMatchWorkflow:
         self.allowed = {task.role: task for task in tasks} if tasks else {role: None for role in ("A", "B", "C")}
         self.dispatched = set()
         start = len(self.batches)
-        await self.lead(stage, {"plan": self.plan.model_dump(), "tasks": [t.model_dump() for t in tasks],
-                                "required_roles": list(self.allowed)})
+        if stage == "followup":
+            await self._controller_followup(tasks)
+        else:
+            await self.lead(stage, {"plan": self.plan.model_dump(), "tasks": [],
+                                    "required_roles": list(self.allowed)})
         expected = {f"research_{role.lower()}" for role in self.allowed}
         if self.dispatched != set(self.allowed) or not any(set(batch["calls"]) == expected and len(batch["calls"]) == len(expected)
+                                                         and (stage != "followup" or batch.get("source") == "controller")
                                                          for batch in self.batches[start:]):
             raise WorkflowError("researchers_not_dispatched_in_one_model_turn")
-        self.diagnostics.stage(stage, "accepted")
+        self.diagnostics.stage(stage, "accepted", dispatch_source="controller" if stage == "followup" else "model")
+
+    async def _controller_followup(self, tasks):
+        """Execute the same Lead's exact authorization as one real SDK tool batch."""
+        if not tasks or tuple(task.model_dump_json() for task in tasks) != self._authorized_followups:
+            raise WorkflowError("research_dispatch_not_authorized")
+        self._enter_lead_stage("followup")
+        self._controller_dispatch_active = True
+        self.diagnostics.stage("followup", "running", dispatch_source="controller")
+        jobs = []
+        try:
+            tools = {tool.name: tool for tool in self.team.lead.tools}
+            names = [f"research_{task.role.lower()}" for task in tasks]
+            if len(set(names)) != len(names) or set(names) != {f"research_{role.lower()}" for role in self.allowed}:
+                raise WorkflowError("research_dispatch_not_authorized")
+            catalog_ids = {row["id"] for page in self.snapshot["pages"] for row in page["data"]}
+            if any(not set(task.model_ids) <= catalog_ids for task in tasks):
+                raise WorkflowError("unknown_model_id")
+            if self.researcher_count + len(tasks) > self.limits.max_researcher_runs:
+                raise WorkflowError("invalid_or_over_budget_followup", "followup_budget_exceeded")
+            for name in names:
+                tool = tools.get(name)
+                if tool is None:
+                    raise WorkflowError("research_dispatch_not_allowed")
+                enabled = tool.is_enabled(RunContextWrapper(context=self.lead_context), self.team.lead) if callable(tool.is_enabled) else tool.is_enabled
+                if inspect.isawaitable(enabled):
+                    enabled = await enabled
+                if not enabled:
+                    raise WorkflowError("research_dispatch_not_allowed")
+            batch_id = str(uuid.uuid4())
+            batch = {"stage": "followup", "source": "controller", "batch_id": batch_id, "calls": names}
+            self.batches.append(batch)
+            self.event("dispatch_batch", "Lead", **batch)
+            log_metadata("authorized_dispatch_batch", run_id=self.run_id, **batch)
+
+            async def invoke(task, name):
+                arguments = json.dumps({"task": task.task, "model_ids": task.model_ids})
+                context = ToolContext.from_agent_context(RunContextWrapper(context=self.lead_context),
+                    tool_call_id=str(uuid.uuid4()), agent=self.team.lead, tool_name=name, tool_arguments=arguments)
+                tool = tools[name]
+                await self.hooks._forward("on_controller_tool_start", context, self.team.lead, tool)
+                await self.hooks.on_tool_start(context, self.team.lead, tool)
+                result = await tool.on_invoke_tool(context, arguments)
+                await self.hooks.on_tool_end(context, self.team.lead, tool, result)
+                value = json.loads(result)
+                if value.get("error") or value.get("status") != "completed":
+                    raise WorkflowError("authorized_followup_tool_failed")
+                return {"role": task.role, "status": "completed"}
+
+            jobs = [asyncio.create_task(invoke(task, name)) for task, name in zip(tasks, names)]
+            outcomes = await asyncio.gather(*jobs)
+            self.followup_outcomes = {"batch_id": batch_id, "source": "controller", "results": outcomes}
+            self._completed_stage = "followup"
+            self.diagnostics.stage("followup", "completed", dispatch_source="controller")
+        finally:
+            for job in jobs:
+                if not job.done():
+                    job.cancel()
+            if jobs:
+                await asyncio.gather(*jobs, return_exceptions=True)
+            self._controller_dispatch_active = False
 
     async def _workflow(self, user_input):
         self.plan = await self.lead("parse", {"user_input": user_input, "task_weight_policy": TASK_DEFAULTS})

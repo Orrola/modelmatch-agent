@@ -8,12 +8,18 @@ import json
 from dataclasses import dataclass, replace
 
 from agents import Agent, ModelSettings, RunContextWrapper, function_tool
+from openai.types.shared import Reasoning
 
 from modelmatch_schemas import AgentCallContext, ParsedPlan, ResearcherOutput, WriterOutput
 from tools.task_classification import POLICY as TASK_CLASSIFICATION_POLICY
 
 
 def safe_tool_error(context, error):
+    from tools.run_diagnostics import failure_details, log_metadata
+    coordinator = getattr(getattr(context, "context", None), "coordinator", None)
+    log_metadata("tool_rejected", run_id=getattr(coordinator, "run_id", None),
+                 stage=getattr(getattr(context, "context", None), "stage", None),
+                 tool=getattr(context, "tool_name", None), error=failure_details(error))
     return json.dumps({"error": "tool_failed", "message": "The tool could not complete. No secret or raw exception details are returned."})
 
 
@@ -22,6 +28,14 @@ class Team:
     lead: Agent
     researchers: dict[str, Agent]
     writer: Agent
+
+
+def low_thinking_settings(settings: ModelSettings) -> ModelSettings:
+    """Permit LOW through the pinned adapter without changing shared settings."""
+    extra = {**(settings.extra_args or {})}
+    extra["allowed_openai_params"] = list(dict.fromkeys([
+        *(extra.get("allowed_openai_params") or []), "reasoning_effort"]))
+    return replace(settings, reasoning=Reasoning(effort="low"), extra_args=extra)
 
 
 def create_team(model, researcher_model, settings: ModelSettings | None = None) -> Team:
@@ -106,7 +120,9 @@ review: examine the supplied deterministic gaps, model IDs, index versions, task
 constraints and failed runs. The same snapshot is fixed; do not retry irretrievable nulls or
 official specifications that have no configured lookup. Request at most one targeted task per affected role
 only when useful. Give each a reason, model IDs if relevant, and a stopping condition.
-followup: call only the requested researcher tools with exactly the supplied targeted task and IDs.
+followup: Python dispatches the exact authorized tasks and model IDs as one parallel SDK tool
+batch. No Lead generation is needed for this stage. Review its controller_followup outcomes
+at review_final; do not call researcher tools during either review stage.
 review_final: document remaining gaps and stopping reason. Do not request further research.
 Never call researcher tools while parsing/reviewing. Never change a parsed plan or user weights
 after parsing. Parse returns ParsedPlan directly. Review returns Review directly.
@@ -140,7 +156,7 @@ or P95 claims. Context, deployment and residency remain unknown without official
 Never treat the grounding model's prose alone as a verified specification."""),
     }
     writer = Agent(
-        name="Writer", model=model, model_settings=settings, output_type=WriterOutput,
+        name="Writer", model=model, model_settings=low_thinking_settings(settings), output_type=WriterOutput,
         instructions="""Select an evidence-grounded recommendation from the provided fixed decision.
 Return exactly the supplied top candidate IDs in their existing order, or an empty list when no
 numeric ranking is supported. Copy the COMPLETE supplied evidence_ids collection, exactly:

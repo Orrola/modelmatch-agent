@@ -97,7 +97,6 @@ class StageControlTests(unittest.IsolatedAsyncioTestCase):
             "parse": (set(), "ParsedPlan"),
             "dispatch": ({"research_a", "research_b", "research_c"}, "DispatchComplete"),
             "review": (set(), "Review"),
-            "followup": ({"research_b"}, "DispatchComplete"),
             "review_final": (set(), "FinalReview"),
         }
         observed = set()
@@ -116,11 +115,15 @@ class StageControlTests(unittest.IsolatedAsyncioTestCase):
             if not tools:
                 self.assertFalse(request["parallel_tool_calls"])
         self.assertEqual(observed, set(expected))
+        self.assertFalse(any(r["payload"].get("stage") == "followup" for r in model.model_requests))
+        self.assertEqual(workflow.batches[-1]["source"], "controller")
+        self.assertEqual(workflow.batches[-1]["calls"], ["research_b"])
+        self.assertEqual(result["diagnostics"]["stages"]["followup"]["status"], "accepted")
         leads = [c for c in self.runner.calls if c["agent"].name == "Lead"]
         self.assertTrue(all(c["agent"] is lead and c["context"] is context for c in leads))
         self.assertEqual(len({c["context"].context_id for c in leads}), 1)
         self.assertEqual([e["stage"] for e in result["trace"] if e["type"] == "lead_stage_completed"],
-                         ["parse", "dispatch", "review", "followup", "review_final"])
+                         ["parse", "dispatch", "review", "review_final"])
 
     async def test_installed_sdk_accepts_every_stage_schema(self):
         from modelmatch_schemas import LEAD_OUTPUT_TYPES

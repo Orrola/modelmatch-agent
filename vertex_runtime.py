@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import os
 import re
 import shutil
@@ -17,7 +18,7 @@ from agents import Model, ModelSettings
 from dotenv import load_dotenv
 from contextvars import ContextVar
 from tools.run_diagnostics import (CALL_CONTEXT, OUTPUT_DIAGNOSTICS, ModelRequestTimeout,
-                                   failure_details, inspect_lead_output,
+                                   failure_details, inspect_structured_output,
                                    log_metadata, now, response_metadata)
 
 PROVIDER_METADATA = ContextVar("modelmatch_provider_metadata", default=None)
@@ -34,6 +35,8 @@ def safe_error(error) -> dict:
     category = categories.get(status, "request_failed")
     if name == "UnsupportedParamsError":
         category = "adapter_rejection"
+    if status == 429 or name == "RateLimitError":
+        category = "quota_or_rate_limit"
     if isinstance(error, (TimeoutError, asyncio.TimeoutError)):
         category = "request_timeout"
     if isinstance(error, BudgetExceeded):
@@ -48,8 +51,19 @@ def safe_error(error) -> dict:
         "request_timeout": "The request exceeded its configured deadline.",
         "execution_budget_exceeded": "Execution stopped at the configured request or prompt limit.",
     }
-    return {"category": category, "exception_type": name, "status_code": status,
-            "message": messages.get(category, "The request failed; raw provider details are withheld.")}
+    result = {"category": category, "exception_type": name, "status_code": status,
+              "message": messages.get(category, "The request failed; raw provider details are withheld.")}
+    if category == "quota_or_rate_limit":
+        headers = getattr(getattr(error, "response", None), "headers", None) or getattr(error, "headers", {}) or {}
+        headers = headers if hasattr(headers, "get") else {}
+        raw = headers.get("retry-after", headers.get("Retry-After"))
+        result["retry_after_present"] = raw is not None
+        try:
+            seconds = float(raw)
+        except (TypeError, ValueError):
+            seconds = None
+        result["retry_after_seconds"] = seconds if seconds is not None and math.isfinite(seconds) and seconds >= 0 else None
+    return result
 
 
 def _gcloud(*args):
@@ -176,8 +190,11 @@ class MeteredModel(Model):
                 output_schema, handoffs, tracing, **kwargs), timeout=self.config.timeout_seconds)
             record.update(status="success", usage=token_usage(response.usage), **response_metadata(response),
                           tool_calls=[getattr(item, "name", None) for item in response.output if getattr(item, "type", None) == "function_call"])
-            if CALL_CONTEXT.get().get("stage") == "parse" and record["output_schema"] == "ParsedPlan":
-                observed = inspect_lead_output(response, metadata.get("finish_reason", record["finish_reason"]))
+            stage = CALL_CONTEXT.get().get("stage")
+            if (stage, record["output_schema"]) in (("parse", "ParsedPlan"), ("writer", "WriterOutput")):
+                from modelmatch_schemas import ParsedPlan, WriterOutput
+                observed = inspect_structured_output(response, metadata.get("finish_reason", record["finish_reason"]),
+                                                     ParsedPlan if stage == "parse" else WriterOutput)
                 record["output_diagnostics"] = observed
                 target = OUTPUT_DIAGNOSTICS.get()
                 if target is not None:

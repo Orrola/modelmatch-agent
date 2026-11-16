@@ -1,7 +1,7 @@
 /* ModelMatch UI: transport, presentation, and interaction stay separate from scoring. */
 const $ = id => document.getElementById(id);
 const labels = {fully_evaluable: 'Fully evaluable', provisional: 'Provisional', unverified: 'Unverified', ineligible: 'Ineligible'};
-const stageNames = {lead: 'Lead', A: 'Researcher A', B: 'Researcher B', C: 'Researcher C', review: 'Evidence Review', decision: 'Decision', writer: 'Writer'};
+const stageNames = {lead: 'Lead', dispatch: 'Research dispatch', followup: 'Follow-up dispatch', A: 'Researcher A', B: 'Researcher B', C: 'Researcher C', review: 'Evidence Review', decision: 'Decision', writer: 'Writer'};
 const stageStates = {pending: 'Pending', running: 'Running', validating: 'Validating', completed: 'Completed', accepted: 'Accepted', failed: 'Failed', skipped: 'Skipped', not_reached: 'Not reached', cancelled: 'Cancelled', fallback: 'Fallback report', interrupted: 'Interrupted'};
 const state = {
   view: 'overview', busy: false, mode: null, original: null, decision: null, analysisId: null, runId: null,
@@ -104,7 +104,7 @@ function resetProgress() {
 }
 function progress(agent, status, stage = '', accepted = null) {
   if (['snapshot', 'decision_gate'].includes(stage) || (['followup', 'review_final'].includes(stage) && ['skipped', 'not_reached'].includes(status))) return;
-  const key = stage === 'review' || stage === 'review_final' ? 'review'
+  const key = ['dispatch', 'followup'].includes(stage) ? stage : stage === 'review' || stage === 'review_final' ? 'review'
     : /^Researcher ([ABC])/.exec(agent)?.[1] || (agent === 'Decision Tool' ? 'decision' : agent === 'Writer' ? 'writer' : agent === 'Lead' ? 'lead' : null);
   if (!key) return;
   const normalized = status === 'completed' && accepted === false ? 'validating' : status;
@@ -129,6 +129,14 @@ function renderProgress() {
       node.append(tracks);
     } else {
       node.append(el('p', 'node-subtitle', {lead: 'Interpret requirements', review: 'Same Lead, evidence check', decision: 'Deterministic ranking', writer: 'Grounded recommendation'}[key]), nodeState(key));
+      if (key === 'lead') {
+        for (const phase of ['dispatch', 'followup']) {
+          const status = state.stages.get(phase);
+          if (status && !['pending', 'skipped', 'not_reached'].includes(status)) {
+            node.append(el('p', 'node-subtitle', `${stageNames[phase]}: ${stageStates[status]}`));
+          }
+        }
+      }
     }
     nodes.push(node);
   }
@@ -427,8 +435,25 @@ function analysisError(result) {
     workflow_timeout: 'The analysis exceeded its overall time limit.',
     lead_output_contract_failed: 'The Lead returned an invalid structured response. The analysis stopped safely.',
     researcher_evidence_incomplete: 'A researcher could not collect sufficient evidence. No recommendation was produced.',
+    invalid_or_over_budget_followup: 'Evidence Review returned a follow-up request that the controller could not authorize. Decision was not reached.',
+    researchers_not_dispatched_in_one_model_turn: 'The Lead research dispatch did not satisfy the required parallel tool-call contract. Decision was not reached.',
+    researcher_evidence_conflict: 'The controller detected inconsistent researcher evidence. Decision was not reached.',
+    authorized_followup_tool_failed: 'An authorized follow-up tool failed. The analysis stopped before Decision; no automatic research retry was made.',
   };
   return `${messages[category] || codes[result.error] || 'The live analysis could not complete. Check the configured Vertex project, ADC credentials, and AA API access.'} No synthetic results were substituted.`;
+}
+function writerFailureMessage(result) {
+  const messages = {
+    incomplete_generation: 'The response reached its output limit before a valid structured report was available.',
+    malformed_json: 'The response was not valid JSON.',
+    schema_validation_error: 'The structured response failed schema validation.',
+    evidence_validation_error: 'The response failed strict evidence or ranking validation.',
+    quota_or_rate_limit: 'The provider quota or rate limit was reached. No automatic retry was made.',
+    timeout: 'The model request exceeded its time limit.',
+    adapter_rejection: 'The model adapter rejected unsupported request parameters.',
+    provider_error: 'The model request failed; sanitized provider diagnostics are available in Technical Details.',
+  };
+  return `Writer failed: ${messages[result.writer_error?.category] || 'No validated Writer output was available.'} Showing a deterministic fallback report with unchanged scores.`;
 }
 async function api(path, body, signal) {
   const response = await fetch(path, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body), signal});
@@ -459,7 +484,7 @@ function handle(event) {
   finishProgress(result);
   if (result.decision) {
     renderDecision(result.decision); navigate('comparison', true);
-    setStatus(result.writer_fallback ? `Writer failed (${pretty(result.writer_error?.category || 'unavailable output')}). Showing a deterministic fallback report with unchanged scores.` : 'Analysis complete. Compare models and inspect the evidence behind the ranking.');
+    setStatus(result.writer_fallback ? writerFailureMessage(result) : 'Analysis complete. Compare models and inspect the evidence behind the ranking.');
   } else if (result.status === 'clarification_needed') {
     navigate('overview', true); $('clarification').hidden = false;
     $('questions').replaceChildren(...(result.questions || []).map(q => el('li', '', q)));

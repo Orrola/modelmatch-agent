@@ -225,6 +225,15 @@ class WebHooks(PanelHooks):
             call.update(status="running", started_at=time.time())
             self.emit({"type": "tool_trace", "call": deepcopy(call)})
 
+    async def on_controller_tool_start(self, context, agent, tool):
+        """Attribute actual controller-dispatched tools without inventing model calls."""
+        self.calls.append({"call_id": context.tool_call_id, "agent": agent.name, "run_id": self.run_id,
+            "context_id": context.context.context_id, "tool": tool.name,
+            "arguments": bounded(json.loads(context.tool_arguments)), "status": "proposed",
+            "origin": "controller", "result": None, "started_at": None,
+            "ended_at": None, "elapsed_seconds": None})
+        self.emit({"type": "tool_trace", "call": deepcopy(self.calls[-1])})
+
     async def on_tool_end(self, context, agent, tool, result):
         call = next((c for c in self.calls if c["agent"] == agent.name and c["tool"] == tool.name and c["status"] == "running"), None)
         if call:

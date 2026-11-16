@@ -24,6 +24,7 @@ globalThis.document={createElement:()=>node(),querySelectorAll:()=>[],getElement
 globalThis.AbortController=class {constructor(){this.signal={listeners:[],addEventListener(name,cb){this.listeners.push(cb);}};}abort(){for(const cb of this.signal.listeners)cb();}};
 globalThis.clearTimeout=()=>{};
 globalThis.TextDecoder=class {decode(value){return typeof value==='string'?value:'';}};
+const renderWorkflowProgress = renderProgress;
 renderProgress=()=>{};
 state.stages=new Map();
 progress('Lead','running','parse',false);
@@ -38,6 +39,29 @@ for (const status of ['completed','cancelled','interrupted','failed']) {
 }
 state.stages=new Map();progress('Lead','skipped','parse');
 assert(state.stages.get('lead')==='skipped','Intentional skip stays distinct from not reached');
+state.stages=new Map();
+progress('Lead','accepted','parse',true);
+progress('Lead','accepted','dispatch',true);
+for (const role of ['A','B','C']) progress(`Researcher ${role}`,'accepted',role,true);
+progress('Lead','accepted','review',true);
+progress('Lead','running','followup',false);
+progress('Lead','failed','followup',false);
+finishProgress({diagnostics:{stages:{parse:{agent:'Lead',stage:'parse',status:'accepted'},dispatch:{agent:'Lead',stage:'dispatch',status:'accepted'},review:{agent:'Lead',stage:'review',status:'accepted'},followup:{agent:'Lead',stage:'followup',status:'failed'},decision:{agent:'Decision Tool',stage:'decision',status:'not_reached'},writer:{agent:'Writer',stage:'writer',status:'not_reached'}}}});
+assert(state.stages.get('lead')==='accepted' && state.stages.get('followup')==='failed','Later Lead failure cannot relabel accepted requirement parsing');
+assert(state.stages.get('review')==='accepted' && state.stages.get('decision')==='not_reached','Review acceptance does not imply authorization and execution of all later stages');
+renderWorkflowProgress();
+assert(document.getElementById('progress').children[0].children.some(n=>n.textContent==='Follow-up dispatch: Failed'),'The actual failed Lead phase remains visible');
+progress('Lead','failed','dispatch',false);
+assert(state.stages.get('lead')==='accepted' && state.stages.get('dispatch')==='failed','Initial dispatch also stays distinct from parse');
+assert(analysisError({error:'invalid_or_over_budget_followup'}).includes('controller could not authorize'),'Controller rejection has a precise safe message');
+assert(analysisError({error:'researcher_evidence_conflict'}).includes('inconsistent researcher evidence'),'Evidence conflicts are not mislabeled as ADC failures');
+assert(analysisError({error:'authorized_followup_tool_failed'}).includes('follow-up tool failed'),'Actual controller tool failure has an accurate message');
+const quotaMessage = writerFailureMessage({writer_error:{category:'quota_or_rate_limit'}});
+assert(quotaMessage.includes('quota or rate limit') && quotaMessage.includes('No automatic retry') && quotaMessage.includes('fallback'),'Writer 429 remains an explicit failed fallback');
+assert(writerFailureMessage({writer_error:{category:'incomplete_generation'}}).includes('output limit'),'Writer truncation differs from schema and provider errors');
+assert(writerFailureMessage({writer_error:{category:'malformed_json'}}).includes('not valid JSON'),'Writer JSON syntax error is explicit');
+assert(writerFailureMessage({writer_error:{category:'schema_validation_error'}}).includes('schema validation'),'Writer schema error is explicit');
+assert(writerFailureMessage({writer_error:{category:'evidence_validation_error'}}).includes('evidence or ranking'),'Writer evidence validation stays strict and distinct');
 assert(analysisError({error:'model_request_timeout'}).includes('model request'),'Model timeout remains separate from workflow timeout');
 assert(analysisError({error:'workflow_timeout'}).includes('overall time'),'Workflow timeout remains separate');
 const adapterError = analysisError({integration_usage:{records:[{status:'failed',error:{category:'adapter_rejection'}}]}});

@@ -66,6 +66,8 @@ def failure_details(error):
         category = "budget_exceeded"
     elif name == "UnsupportedParamsError":
         category = "adapter_rejection"
+    elif status == 429 or name == "RateLimitError":
+        category = "quota_or_rate_limit"
     elif isinstance(status, int) or any(x in name for x in ("APIError", "ConnectionError", "RateLimit", "ServiceUnavailable")):
         category = "provider_error"
     result = {"category": category, "exception_type": name,
@@ -95,9 +97,14 @@ def failure_details(error):
 
 
 def inspect_lead_output(response, finish_reason):
-    """Inspect syntax and the unchanged ParsedPlan contract without retaining text."""
-    from pydantic import ValidationError
+    """Inspect the unchanged ParsedPlan contract without retaining text."""
     from modelmatch_schemas import ParsedPlan
+    return inspect_structured_output(response, finish_reason, ParsedPlan)
+
+
+def inspect_structured_output(response, finish_reason, output_type):
+    """Inspect strict syntax/schema only; never retain values or hidden reasoning."""
+    from pydantic import ValidationError
 
     parts = [part for item in getattr(response, "output", []) if getattr(item, "type", None) == "message"
              for part in getattr(item, "content", [])]
@@ -115,9 +122,9 @@ def inspect_lead_output(response, finish_reason):
         if isinstance(error, json.JSONDecodeError):
             result.update(json_line=error.lineno, json_column=error.colno, json_offset=error.pos)
     else:
-        result["missing_contract_fields"] = [name for name in ParsedPlan.model_fields if name not in parsed_json] if isinstance(parsed_json, dict) else []
+        result["missing_contract_fields"] = [name for name in output_type.model_fields if name not in parsed_json] if isinstance(parsed_json, dict) else []
         try:
-            ParsedPlan.model_validate_json(text, strict=True)
+            output_type.model_validate_json(text, strict=True)
         except ValidationError as error:
             result["validation_category"] = "schema_validation_error"
             result["schema_errors"] = failure_details(error).get("schema_errors", [])

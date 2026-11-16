@@ -120,7 +120,7 @@ class SafeOutputTests(unittest.TestCase):
         error = ProviderError()
         error.__cause__ = TimeoutError()
         result = failure_details(error)
-        self.assertEqual(result["category"], "provider_error")
+        self.assertEqual(result["category"], "quota_or_rate_limit")
         self.assertEqual(result["status_code"], 429)
 
 
