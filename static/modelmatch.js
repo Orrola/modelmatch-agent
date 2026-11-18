@@ -7,7 +7,7 @@ const state = {
   view: 'overview', busy: false, mode: null, original: null, decision: null, analysisId: null, runId: null,
   controller: null, generation: 0, stages: new Map(), traces: new Map(), activity: [],
   selected: new Set(), drawerId: null, drawerFocus: null, evidenceLimit: 40,
-  weightSerial: 0, weightTimer: null, weightController: null, writerStale: false,
+  weightSerial: 0, weightTimer: null, weightController: null, writerStale: false, selection: null, selector: null, modelIdentity: null, drawerDecision: null, drawerIdentity: null,
 };
 
 // Presentation helpers never normalize indices or calculate decision scores.
@@ -156,14 +156,15 @@ function finishProgress(result = null, stopped = false) {
     if (e.type === 'decision_completed') progress('Decision Tool', 'completed');
   }
   for (const e of Object.values(result?.diagnostics?.stages || {})) progress(e.agent, e.status, e.stage, e.status === 'accepted');
-  if (result && 'writer_fallback' in result) progress('Writer', result.writer_fallback ? 'fallback' : 'accepted');
+  if (result?.writer_status) progress('Writer', result.writer_status);
+  else if (result && 'writer_fallback' in result) progress('Writer', result.writer_fallback ? 'fallback' : 'accepted');
   for (const [key, value] of state.stages) {
     if (value === 'running' || value === 'validating') state.stages.set(key, 'interrupted');
     if (value === 'pending') state.stages.set(key, 'not_reached');
   }
   renderProgress();
   const parallel = result && observedParallel(result.trace || []);
-  text('workflow-status', stopped ? 'Stopped' : result?.writer_fallback ? 'Writer failed · Fallback report' : result?.status === 'clarification_needed' ? 'Awaiting clarification' : result?.decision ? 'Research complete' : parallel ? 'Parallel research observed · Did not complete' : 'Did not complete');
+  text('workflow-status', stopped ? 'Stopped' : result?.selector?.status === 'unavailable' ? 'Decision retained · Selector unavailable' : result?.writer_fallback ? 'Writer failed · Fallback report' : result?.status === 'clarification_needed' ? 'Awaiting clarification' : result?.decision ? 'Research complete' : parallel ? 'Parallel research observed · Did not complete' : 'Did not complete');
 }
 function addActivity(agent, message) {
   state.activity.push({agent, message});
@@ -197,7 +198,7 @@ function selectionControl(candidate) {
 function modelTitle(candidate) { return button(candidate.name, () => openModel(candidate.model_id), 'model-title'); }
 function renderCard(candidate, index) {
   const card = el('article', 'model-card'); card.dataset.modelId = candidate.model_id;
-  const top = el('div', 'card-topline'); top.append(el('span', 'rank-tag', `SHORTLIST ${String(index + 1).padStart(2, '0')}`), statusBadge(candidate));
+  const top = el('div', 'card-topline'); top.append(el('span', 'rank-tag', state.selection ? pretty(Object.keys(state.selection.slots).find(role => state.selection.slots[role].candidate?.model_id === candidate.model_id) || 'recommendation') : `SHORTLIST ${String(index + 1).padStart(2, '0')}`), statusBadge(candidate));
   card.append(top, modelTitle(candidate));
   if (providerName(candidate)) card.append(el('p', 'provider-name', providerName(candidate)));
   const score = el('div', 'score-block'), caption = el('span', 'score-caption', 'Decision score S'); caption.append(el('span', '', 'Custom policy points'));
@@ -209,15 +210,12 @@ function renderCard(candidate, index) {
   const signals = el('div', 'model-signals'); signals.append(badge(pretty(candidate.eligibility), candidate.eligibility === 'eligible' ? 'good' : 'warning'));
   const gaps = missingFor(candidate.model_id);
   if (gaps.length) signals.append(el('span', 'missing-signal', `${gaps.length} unavailable ${gaps.length === 1 ? 'metric' : 'metrics'}`));
-  const actions = el('div', 'card-actions'); actions.append(button('View model details ↗', () => openModel(candidate.model_id)), selectionControl(candidate));
-  card.append(score, metrics, el('p', 'rationale', rationale(candidate)), signals);
-  if (typeof candidate.estimated_monthly_cost_usd === 'number') {
-    const cost = el('p', 'cost-label'); cost.append(el('strong', '', monthlyCost(candidate)), el('span', '', ' estimated / month')); card.append(cost);
-  }
-  card.append(actions); return card;
+  card.append(score, metrics, signals);
+  if (typeof candidate.O === 'number' && candidate.O < 0) card.append(el('p', 'model-warning', `Your stated operational targets deduct ${number(-candidate.O)} points for this model.`));
+  return card;
 }
 function renderGroups(topIds) {
-  const groups = [];
+  const groups = [], views = recommendationViews();
   for (const [status, label] of Object.entries(labels)) {
     const all = Object.values(state.decision.candidates).filter(c => c.candidate_status === status);
     const others = all.filter(c => !topIds.has(c.model_id));
@@ -228,7 +226,7 @@ function renderGroups(topIds) {
       const row = el('div', 'candidate-row'), selection = selectionControl(candidate);
       // Compact rows use an accessible checkbox without duplicating its visible label.
       selection.lastChild.hidden = true;
-      const name = el('div'); name.append(modelTitle(candidate), el('p', 'row-description', candidate.S == null ? 'Score unavailable — inspect missing evidence' : `${number(candidate.G)} G · ${number(candidate.U)} U · ${number(candidate.O)} O`));
+      const name = el('div'); name.append(modelTitle(candidate), el('p', 'field-help', `${views.rawRank(candidate.model_id)} · ${views.identityLine(candidate.model_id)}`), el('p', 'row-description', candidate.S == null ? 'Score unavailable — inspect missing evidence' : `${number(candidate.G)} G · ${number(candidate.U)} U · ${number(candidate.O)} O`));
       row.append(selection, name, statusBadge(candidate), el('strong', candidate.S == null ? 'row-score value-unknown' : 'row-score', number(candidate.S))); group.append(row);
     }
     if (!others.length) group.append(el('p', 'group-empty', all.length ? 'All models in this category are shown in the shortlist above.' : 'No candidates in this category.'));
@@ -241,6 +239,26 @@ function updateWeightLabels(alpha) {
   $('alpha').value = alpha; $('alpha').style.setProperty('--alpha-fill', percent(alpha));
   $('alpha').setAttribute('aria-valuetext', `${percent(alpha)} general intelligence, ${percent(1 - alpha)} use-case fit`);
 }
+function recommendationRows(decision, selection, selector) {
+  if (selector?.status === 'unavailable') return [];
+  if (selection) return ['best_overall', 'lower_cost_alternative', 'different_family']
+    .map(role => selection.slots[role]).filter(slot => slot.status === 'selected')
+    .map(slot => decision.candidates[slot.candidate.model_id]);
+  const ranking = decision.rankings.fully_evaluable.length ? decision.rankings.fully_evaluable : decision.rankings.provisional;
+  return ranking.slice(0, 3).map(row => decision.candidates[row.model_id]);
+}
+function recommendationViews(viewState = state) {
+  return ModelMatchRecommendations.create({state: viewState, el, text, button, badge, number, pretty, statusBadge,
+    modelTitle: viewState === state ? modelTitle : candidate => button(candidate.name, () => openRawModel(candidate, viewState.decision, viewState.modelIdentity), 'model-title'),
+    selectionControl, missingFor: id => missingFor(id, viewState.decision),
+    evidenceFor: candidate => evidenceFor(candidate, viewState.decision), metricLabel, reasonLabel, renderCard, openRawModel});
+}
+function openRawModel(candidate, decision, identity) {
+  if (decision === state.decision) { openModel(candidate.model_id); return; }
+  state.drawerDecision = decision; state.drawerIdentity = identity; state.drawerId = candidate.model_id;
+  state.drawerFocus = document.activeElement; renderDrawer(candidate.model_id);
+  const drawer = $('model-drawer'); if (!drawer.open) drawer.showModal(); $('close-drawer').focus();
+}
 function renderDecision(decision) {
   state.decision = decision;
   $('results').hidden = false; $('comparison-empty').hidden = true;
@@ -249,16 +267,14 @@ function renderDecision(decision) {
   text('weight-source', `${pretty(decision.weights.task_type)} · Suggested ${percent(decision.weights.suggested_alpha)} General / ${percent(1 - decision.weights.suggested_alpha)} Use-case.`);
   text('weight-mode', decision.weights.weight_mode === 'user_override' ? 'Custom weights' : 'Task default');
   text('data-label', decision.data_mode === 'mock' ? 'SYNTHETIC DEMO · Fictional models and scores. Not real AA evaluations or purchasing advice.' : decision.catalog_complete ? 'Artificial Analysis evidence · Results are conditional on your requirements and available evidence.' : 'Limited catalog coverage · This shortlist is provisional and does not represent a complete market comparison.');
-  const ranking = decision.rankings.fully_evaluable.length ? decision.rankings.fully_evaluable : decision.rankings.provisional;
-  const top = ranking.slice(0, 3).map(r => decision.candidates[r.model_id]);
-  text('ranking-title', top.length ? decision.rankings.fully_evaluable.length ? 'Your recommended shortlist' : 'Your provisional shortlist' : 'No supported numeric shortlist');
-  text('ranking-subtitle', top.length ? `Up to three models ranked under your selected weights. Select models to compare side by side.` : 'Required evidence is missing or eligibility is unresolved. Inspect candidates below.');
+  const top = state.selection && state.selector?.status !== 'unavailable' ? recommendationRows(decision, state.selection, state.selector) : [];
+  text('ranking-title', !state.selection || state.selector?.status === 'unavailable' ? 'Recommendation selection unavailable' : top.length ? decision.rankings.fully_evaluable.length ? 'Recommended choices' : 'Provisional recommended choices' : 'No supported numeric shortlist');
+  text('ranking-subtitle', !state.selection || state.selector?.status === 'unavailable' ? 'Raw Decision scores and evidence are retained below. No decision-oriented recommendation is claimed.' : `${decision.relevance.match_status === 'partial' ? 'The Capability Index is a partial proxy for this task.' : decision.relevance.match_status === 'strong' ? 'Choices use the selected task-relevant Capability Index.' : 'No supported task-relevant Capability Index is available.'} Validate task fit and operational tradeoffs in a representative pilot. Costs are workload estimates, not billing quotes.`);
   text('result-status', top.length ? decision.rankings.fully_evaluable.length && decision.catalog_complete ? 'Evidence supported' : 'Provisional' : 'Further validation needed');
-  $('ranking').replaceChildren(...top.map(renderCard));
-  $('ranking').dataset.count = top.length;
+  const views = recommendationViews(); views.renderSlots(); views.renderCoverage(); views.renderAlternatives(); views.renderRawRanking();
   const counts = decision.counts_before_shortlist;
   text('counts', `${counts.total} candidates before shortlist limits · ${counts.fully_evaluable} fully evaluable · ${counts.provisional} provisional · ${counts.unverified} unverified · ${counts.ineligible} ineligible`);
-  renderGroups(new Set(top.map(c => c.model_id)));
+  renderGroups(new Set());
   $('comparison-count').hidden = false; text('comparison-count', counts.total);
   state.selected = new Set([...state.selected].filter(id => decision.candidates[id]));
   updateSelection(); renderEvidence(); renderWriterNote();
@@ -293,8 +309,8 @@ function renderWriterNote() {
   if (!state.original?.decision) return;
   const originalAlpha = state.original.decision.weights.alpha;
   $('writer-stale').className = `writer-note${state.writerStale ? ' adjusted' : ''}`;
-  $('writer-stale').replaceChildren(el('span', '', state.writerStale
-    ? `Adjusted ranking · The original Writer report still describes ${percent(originalAlpha)} General / ${percent(1 - originalAlpha)} Use-case. Its explanation has not been regenerated.`
+  $('writer-stale').replaceChildren(el('span', '', state.original.writer_status === 'skipped' ? 'No Writer generation. The original report is an explicitly labeled deterministic fallback.' : state.original.writer_fallback ? `Deterministic fallback report · Writer generation was not accepted.${state.writerStale ? ' This report is stale for the current selection.' : ''}` : state.writerStale
+    ? `Adjusted selection or weights · The original Writer report describes the original selection at ${percent(originalAlpha)} General / ${percent(1 - originalAlpha)} Use-case. Its explanation has not been regenerated.`
     : `Original analysis · Writer report at ${percent(originalAlpha)} General / ${percent(1 - originalAlpha)} Use-case.`),
     button('View original analysis →', () => { navigate('evidence', true); $('writer-report').open = true; $('writer-report').scrollIntoView({block: 'start'}); }));
 }
@@ -341,12 +357,12 @@ function renderEvidenceRows() {
 function renderOriginalSummary() {
   const original = state.original?.decision;
   if (!original) return;
-  text('report-note', `Original weights: ${percent(original.weights.alpha)} General / ${percent(1 - original.weights.alpha)} Use-case. This summary remains tied to the original analysis. The complete, unchanged Writer report is in Technical Details.`);
-  const ranking = original.rankings.fully_evaluable.length ? original.rankings.fully_evaluable : original.rankings.provisional;
+  text('report-note', `${state.writerStale ? 'STALE: This report does not describe the current recommendation selection. ' : ''}Original weights: ${percent(original.weights.alpha)} General / ${percent(1 - original.weights.alpha)} Use-case. This summary remains tied to the original analysis. The complete, unchanged Writer report is in Technical Details.`);
+  const rows = recommendationRows(original, state.original.selection, state.original.selector);
   const list = el('ul');
-  for (const row of ranking.slice(0, 3)) list.append(el('li', '', `${original.candidates[row.model_id].name} — original decision score ${number(row.S)}`));
-  $('report').replaceChildren(el('p', '', ranking.length ? 'Original shortlist, before any weight adjustments:' : 'The original analysis did not support a numeric shortlist.'), list,
-    el('p', '', state.original.writer_fallback ? 'The live Writer output was unavailable or rejected. The backend supplied a deterministic fallback report.' : 'The Writer output passed the backend ranking and evidence checks.'));
+  for (const row of rows) list.append(el('li', '', `${row.name} — original decision score ${number(row.S)}`));
+  $('report').replaceChildren(el('p', '', state.original.selector?.status === 'unavailable' ? 'Original recommendation selection was unavailable; raw Decision results are retained.' : rows.length ? 'Original shortlist, before any weight adjustments:' : 'The original analysis did not support a numeric shortlist.'), list,
+    el('p', '', state.original.writer_status === 'skipped' ? 'The Selector was unavailable. No Writer generation occurred; raw Decision results remain available.' : state.original.writer_fallback ? 'The live Writer output was unavailable or rejected. The backend supplied a deterministic fallback report.' : 'The Writer output passed the backend ranking and evidence checks.'));
 }
 function renderTechnical() {
   if (!$('technical-details').open) return;
@@ -371,38 +387,42 @@ function renderTraces() {
 }
 function drawerSection(title, ...children) { const section = el('section', 'drawer-section'); section.append(el('h3', '', title), ...children); return section; }
 function renderDrawer(id) {
-  const c = state.decision?.candidates[id];
+  const d = state.drawerDecision || state.decision, original = d !== state.decision;
+  const source = original ? state.drawerIdentity : state.modelIdentity;
+  const detailsView = recommendationViews({...state, decision: d, modelIdentity: source, selection: original ? state.original?.selection : state.selection});
+  const c = d?.candidates[id];
   if (!c) return;
   const title = el('h2', '', c.name); title.id = 'drawer-title';
-  const children = [title];
+  const children = [title, el('p', 'field-help', original ? 'Original analysis values — preserved, not the current adjusted recommendation.' : 'Current deterministic decision values.'), el('p', 'identity-line', detailsView.identityLine(id)), el('p', 'raw-rank', detailsView.rawRank(id)), detailsView.familyConfigurations(id)];
   if (providerName(c)) children.push(el('p', 'provider-name', providerName(c)));
   const statuses = el('div', 'drawer-status'); statuses.append(statusBadge(c), badge(pretty(c.eligibility), c.eligibility === 'eligible' ? 'good' : 'warning')); children.push(statuses);
   const scores = el('div', 'drawer-scores');
   for (const [key, label] of [['S', 'Decision S'], ['G', 'General G'], ['U', 'Use-case U'], ['O', 'Adjustment O']]) { const cell = el('div'); cell.append(el('span', '', label), el('strong', c[key] == null ? 'value-unknown' : '', number(c[key]))); scores.append(cell); }
-  children.push(scores, el('p', 'field-help', `Current weights: ${percent(state.decision.weights.alpha)} General / ${percent(1 - state.decision.weights.alpha)} Use-case. Scores are custom policy points, not accuracy percentages.`));
-  children.push(drawerSection('Why this model is here', el('p', '', rationale(c))));
+  children.push(scores, el('p', 'field-help', `Current weights: ${percent(d.weights.alpha)} General / ${percent(1 - d.weights.alpha)} Use-case. Scores are custom policy points, not accuracy percentages.`));
+  children.push(drawerSection('Why this model is here', el('p', '', rationale(c, d))));
   const tradeoffs = el('ul');
   for (const [name, p] of Object.entries(c.operational_penalties || {})) tradeoffs.append(el('li', '', `${pretty(name)}: ${p.deduction == null ? 'adjustment unknown' : `${number(p.deduction)} points`} — ${p.status === 'not_applicable' ? 'no applicable soft target supplied' : reasonLabel(p.reason || p.status)}.`));
   if (typeof c.estimated_monthly_cost_usd === 'number') tradeoffs.append(el('li', '', `Estimated monthly token cost: ${monthlyCost(c)}. Actual bills can differ.`));
   else tradeoffs.append(el('li', '', 'Monthly cost is not estimated without sufficient workload and input/output prices.'));
-  for (const check of c.constraint_checks || []) tradeoffs.append(el('li', '', `${check.hard ? 'Hard requirement' : 'Preference'} — ${metricLabel(check.metric)}: ${pretty(check.state || 'unknown')}. ${check.reason ? reasonLabel(check.reason) : ''}`));
-  for (const gap of missingFor(id)) tradeoffs.append(el('li', '', `${metricLabel(gap.metric)}: ${reasonLabel(gap.reason)}${gap.required ? ' — required evidence' : ' — optional for this request'}.`));
+  for (const check of c.constraint_checks || []) tradeoffs.append(el('li', '', `${check.hard ? 'Hard requirement' : 'Preference'} — ${metricLabel(check.metric)}: ${pretty(check.constraint_status || check.state || 'unknown')}. ${check.reason ? reasonLabel(check.reason) : ''}`));
+  for (const gap of missingFor(id, d)) tradeoffs.append(el('li', '', `${metricLabel(gap.metric)}: ${reasonLabel(gap.reason)}${gap.required ? ' — required evidence' : ' — optional for this request'}.`));
   children.push(drawerSection('Tradeoffs & missing information', tradeoffs));
   const sources = el('div');
-  for (const evidence of evidenceFor(c)) {
-    const row = el('div', 'drawer-evidence'), category = sourceCategory(evidence);
+  for (const evidence of evidenceFor(c, d)) {
+    const row = el('div', 'drawer-evidence'), category = sourceCategory(evidence, d);
     row.append(el('h3', '', metricLabel(evidence.metric)), el('p', '', `${typeof evidence.value === 'number' ? number(evidence.value) : evidence.value || 'Unknown'} ${evidence.unit || ''}`), badge(category.label, category.tone),
       el('p', '', `${dateLabel(evidence.retrieved_at)} · Index version: ${evidence.index_version ?? 'not supplied'}${evidence.statistic ? ` · Statistic: ${evidence.statistic}` : ''}`));
     if (evidence.supporting_excerpt) row.append(el('p', '', `Source excerpt: “${evidence.supporting_excerpt}”`));
-    if (safeLink(evidence.source_url)) row.append(link(evidence.source_url, state.decision.data_mode === 'mock' ? 'API reference — not a real evaluation ↗' : 'Open source ↗'));
+    if (safeLink(evidence.source_url)) row.append(link(evidence.source_url, d.data_mode === 'mock' ? 'API reference — not a real evaluation ↗' : 'Open source ↗'));
     sources.append(row);
   }
   children.push(drawerSection('Evidence & sources', sources), drawerSection('Suggested pilot', el('p', '', 'Evaluate representative tasks, factual reliability, workload cost, and latency. Verify exact model-version context and deployment requirements before production.')));
   const technical = el('details', 'panel technical-panel'); technical.append(el('summary', '', 'Technical details'), el('pre', '', JSON.stringify({aa_model_id: id, snapshot_id: c.snapshot_id, evidence_ids: c.evidence_ids, constraint_checks: c.constraint_checks}, null, 2))); children.push(technical);
-  children.push(button(state.selected.has(id) ? 'Remove from comparison' : 'Add to comparison', () => { toggleSelection(id, !state.selected.has(id)); renderDrawer(id); }, 'button button-secondary'));
+  if (!original) children.push(button(state.selected.has(id) ? 'Remove from comparison' : 'Add to comparison', () => { toggleSelection(id, !state.selected.has(id)); renderDrawer(id); }, 'button button-secondary'));
   $('drawer-content').replaceChildren(...children);
 }
 function openModel(id) {
+  state.drawerDecision = null; state.drawerIdentity = null;
   state.drawerId = id; state.drawerFocus = document.activeElement; renderDrawer(id);
   const drawer = $('model-drawer'); if (!drawer.open) drawer.showModal(); $('close-drawer').focus();
 }
@@ -478,13 +498,14 @@ function handle(event) {
   if (event.type === 'error') throw new Error(event.message);
   if (event.type !== 'done') return;
   state.analysisId = event.analysis_id; state.original = event.result; state.writerStale = false;
+  state.selection = event.result.selection || null; state.selector = event.result.selector || null; state.modelIdentity = event.result.model_identity || null;
   const result = event.result;
   if (result.plan) renderPlan(result.plan);
   for (const call of result.tool_calls || []) state.traces.set(call.call_id, call);
   finishProgress(result);
   if (result.decision) {
     renderDecision(result.decision); navigate('comparison', true);
-    setStatus(result.writer_fallback ? writerFailureMessage(result) : 'Analysis complete. Compare models and inspect the evidence behind the ranking.');
+    setStatus(result.selector?.status === 'unavailable' ? 'Decision retained. Recommendation selection is unavailable; no Writer generation was performed.' : !result.selection ? 'Raw Decision retained. This response has no compatible recommendation selection; inspect the original report for Writer status.' : result.writer_fallback ? writerFailureMessage(result) : 'Analysis complete. Compare models and inspect the evidence behind the ranking.');
   } else if (result.status === 'clarification_needed') {
     navigate('overview', true); $('clarification').hidden = false;
     $('questions').replaceChildren(...(result.questions || []).map(q => el('li', '', q)));
@@ -521,7 +542,7 @@ async function analyze() {
   catch (error) { $('form-error').hidden = false; text('form-error', error.message); return; }
   $('form-error').hidden = true; invalidateWeights();
   const generation = ++state.generation;
-  state.busy = true; state.controller = new AbortController(); state.analysisId = null; state.original = null; state.decision = null; state.runId = null;
+  state.busy = true; state.controller = new AbortController(); state.analysisId = null; state.original = null; state.decision = null; state.runId = null; state.selection = null; state.selector = null; state.modelIdentity = null; state.drawerDecision = null; state.drawerIdentity = null;
   state.traces.clear(); state.activity = []; state.evidenceLimit = 40; state.selected.clear(); state.drawerId = null;
   if ($('model-drawer').open) $('model-drawer').close();
   $('results').hidden = true; $('comparison-empty').hidden = false; $('evidence-results').hidden = true; $('evidence-empty').hidden = false;
@@ -563,6 +584,7 @@ async function recalculate(alpha) {
     const result = await response.json();
     if (serial !== state.weightSerial || id !== state.analysisId) return;
     state.writerStale = result.writer_explanation_stale;
+    state.selection = result.selection || null; state.selector = result.selector || null; state.modelIdentity = result.model_identity || null;
     renderDecision(result.decision); text('weight-status', 'Updated from existing evidence. No research rerun.');
     text('announcement', `Ranking updated. ${percent(result.decision.weights.alpha)} General, ${percent(1 - result.decision.weights.alpha)} Use-case.`);
   } catch (error) {
@@ -596,8 +618,9 @@ function initialize() {
   $('show-comparison').addEventListener('click', () => { navigate('comparison'); $('compare-panel').hidden = false; renderComparison(); $('compare-panel').scrollIntoView({block: 'start', behavior: 'smooth'}); });
   $('clear-selection').addEventListener('click', clearSelection); $('clear-comparison').addEventListener('click', clearSelection);
   $('close-drawer').addEventListener('click', () => $('model-drawer').close());
-  $('model-drawer').addEventListener('close', () => { state.drawerId = null; if (state.drawerFocus?.isConnected) state.drawerFocus.focus(); else $('main').focus({preventScroll: true}); });
+  $('model-drawer').addEventListener('close', () => { state.drawerId = null; state.drawerDecision = null; state.drawerIdentity = null; if (state.drawerFocus?.isConnected) state.drawerFocus.focus(); else $('main').focus({preventScroll: true}); });
   $('model-drawer').addEventListener('click', event => { if (event.target === $('model-drawer')) { const bounds = $('model-drawer').getBoundingClientRect(); if (event.clientX < bounds.left) $('model-drawer').close(); } });
+  $('ranking-scope').addEventListener('change', () => { if (state.decision) recommendationViews().renderRawRanking(); });
   $('technical-details').addEventListener('toggle', renderTechnical);
   $('evidence-search').addEventListener('input', () => { state.evidenceLimit = 40; renderEvidenceRows(); });
   $('more-evidence').addEventListener('click', () => { state.evidenceLimit += 40; renderEvidenceRows(); });

@@ -115,7 +115,7 @@ async def run_test(args, diagnostics, config):
                 report["pipeline_assertions"] = {
                     "same_turn_parallel_dispatch": False,
                     "targeted_followup_observed": any(e.get("round_number") == 1 for e in result["trace"] if e["type"] == "researcher_start"),
-                    "writer_validation_passed": not result.get("writer_fallback", True),
+                    "writer_validation_passed": result.get("writer_status") == "accepted",
                     "real_aa_candidates": len(snapshot["pages"][0]["data"])}
                 starts = [e for e in result["trace"] if e["type"] == "researcher_start" and e["round_number"] == 0]
                 first_ids = {e["context_id"] for e in starts}

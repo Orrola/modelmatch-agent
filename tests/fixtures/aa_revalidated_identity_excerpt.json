@@ -1,0 +1,240 @@
+{
+  "snapshot_id": "d83dcce1043c1044",
+  "data_mode": "live",
+  "source_url": "https://artificialanalysis.ai/api/v2/language/models/free",
+  "retrieved_at": "2026-11-18T02:17:14.526737+00:00",
+  "description": "Retained real AA identity-only excerpts for snapshot revalidation; no benchmark or operational metric values.",
+  "snapshot_fingerprint": "d83dcce1043c1044f21b298a975d9951175a44d9bce759221a2ab454ab790e47",
+  "reviewed_models": [
+    {
+      "id": "092a3b0e-c5c8-45dc-bf1b-53673c8ff352",
+      "name": "GPT-6.1 Sol (Xhigh)",
+      "slug": "gpt-6-1-sol-xhigh",
+      "release_date": "2026-09-29",
+      "model_creator": {
+        "id": "e67e56e3-15cd-43db-b679-da4660a69f41",
+        "name": "OpenAI"
+      }
+    },
+    {
+      "id": "0c9b4e05-9259-42cc-b40e-d6acbbeaa7e8",
+      "name": "Claude Fable 5.2 (Medium, Default Fallback)",
+      "slug": "claude-fable-5-2-medium",
+      "release_date": "2026-11-09",
+      "model_creator": {
+        "id": "f0aa413f-e8ae-4fcd-9c48-0e049f4f3128",
+        "name": "Anthropic"
+      }
+    },
+    {
+      "id": "0d3eaafd-54ed-4f78-bdd7-05a2db883986",
+      "name": "Gemini 4 Carbon (Medium)",
+      "slug": "gemini-4-carbon-medium",
+      "release_date": "2026-10-28",
+      "model_creator": {
+        "id": "faddc6d9-2c14-445f-9b28-56726f59c793",
+        "name": "Google"
+      }
+    },
+    {
+      "id": "1f541ef3-913f-4eb2-9d07-0e93c7a9a5e3",
+      "name": "GPT-6 Astra (Xhigh)",
+      "slug": "gpt-6-astra-xhigh",
+      "release_date": "2026-09-03",
+      "model_creator": {
+        "id": "e67e56e3-15cd-43db-b679-da4660a69f41",
+        "name": "OpenAI"
+      }
+    },
+    {
+      "id": "2f339a97-9a0d-499a-9cb5-e0db665bfa25",
+      "name": "GPT-6 Astra (Max)",
+      "slug": "gpt-6-astra",
+      "release_date": "2026-09-03",
+      "model_creator": {
+        "id": "e67e56e3-15cd-43db-b679-da4660a69f41",
+        "name": "OpenAI"
+      }
+    },
+    {
+      "id": "2f3c4dc9-a450-4303-8697-0237257cf08f",
+      "name": "Claude Opus 5.5 (Max, Default Fallback)",
+      "slug": "claude-opus-5-5",
+      "release_date": "2026-09-22",
+      "model_creator": {
+        "id": "f0aa413f-e8ae-4fcd-9c48-0e049f4f3128",
+        "name": "Anthropic"
+      }
+    },
+    {
+      "id": "3e87c73e-a257-495e-9730-367a66229811",
+      "name": "Claude Fable 5.1 (Max, Default Fallback)",
+      "slug": "claude-fable-5-1",
+      "release_date": "2026-09-01",
+      "model_creator": {
+        "id": "f0aa413f-e8ae-4fcd-9c48-0e049f4f3128",
+        "name": "Anthropic"
+      }
+    },
+    {
+      "id": "593f2d23-247b-41c9-a679-cebd225f0a9a",
+      "name": "Claude Fable 5.2 (Max, Default Fallback)",
+      "slug": "claude-fable-5-2",
+      "release_date": "2026-11-09",
+      "model_creator": {
+        "id": "f0aa413f-e8ae-4fcd-9c48-0e049f4f3128",
+        "name": "Anthropic"
+      }
+    },
+    {
+      "id": "76942526-cc96-46b0-bc27-29561c53ed70",
+      "name": "Claude Fable 5.2 (Xhigh, Default Fallback)",
+      "slug": "claude-fable-5-2-xhigh",
+      "release_date": "2026-11-09",
+      "model_creator": {
+        "id": "f0aa413f-e8ae-4fcd-9c48-0e049f4f3128",
+        "name": "Anthropic"
+      }
+    },
+    {
+      "id": "909ed0ba-bcc5-4f38-8162-08a4e187a772",
+      "name": "Gemini 4 Carbon (High)",
+      "slug": "gemini-4-carbon",
+      "release_date": "2026-10-28",
+      "model_creator": {
+        "id": "faddc6d9-2c14-445f-9b28-56726f59c793",
+        "name": "Google"
+      }
+    },
+    {
+      "id": "9b166bf3-42db-4f63-8338-1c4a1244ffe8",
+      "name": "Claude Fable 5.1 (Xhigh, Default Fallback)",
+      "slug": "claude-fable-5-1-xhigh",
+      "release_date": "2026-09-01",
+      "model_creator": {
+        "id": "f0aa413f-e8ae-4fcd-9c48-0e049f4f3128",
+        "name": "Anthropic"
+      }
+    },
+    {
+      "id": "b0c462cf-f2d0-4126-9434-28db9502219f",
+      "name": "GPT-6.1 Terra (Max)",
+      "slug": "gpt-6-1-terra",
+      "release_date": "2026-10-26",
+      "model_creator": {
+        "id": "e67e56e3-15cd-43db-b679-da4660a69f41",
+        "name": "OpenAI"
+      }
+    },
+    {
+      "id": "b171d979-5ec1-45de-b8b9-db1ee65e77ec",
+      "name": "Claude Sonnet 5.5 (Max, Default Fallback)",
+      "slug": "claude-sonnet-5-5",
+      "release_date": "2026-09-28",
+      "model_creator": {
+        "id": "f0aa413f-e8ae-4fcd-9c48-0e049f4f3128",
+        "name": "Anthropic"
+      }
+    },
+    {
+      "id": "b25ac058-1e33-4c31-bbc9-a20c3ad0717a",
+      "name": "GPT-6.1 Sol (Max)",
+      "slug": "gpt-6-1-sol",
+      "release_date": "2026-09-29",
+      "model_creator": {
+        "id": "e67e56e3-15cd-43db-b679-da4660a69f41",
+        "name": "OpenAI"
+      }
+    },
+    {
+      "id": "b3866703-a9f7-4ea2-8f3f-b361c90aaf0e",
+      "name": "Gemini 4 Carbon (Low)",
+      "slug": "gemini-4-carbon-low",
+      "release_date": "2026-10-28",
+      "model_creator": {
+        "id": "faddc6d9-2c14-445f-9b28-56726f59c793",
+        "name": "Google"
+      }
+    },
+    {
+      "id": "cfc7acb1-d903-4858-9b6c-6c7776caf8f9",
+      "name": "Claude Fable 5.2 (Low, Default Fallback)",
+      "slug": "claude-fable-5-2-low",
+      "release_date": "2026-11-09",
+      "model_creator": {
+        "id": "f0aa413f-e8ae-4fcd-9c48-0e049f4f3128",
+        "name": "Anthropic"
+      }
+    },
+    {
+      "id": "d366dfa1-d940-4788-aa73-d298c45699b3",
+      "name": "Gemini 4 Argon (High)",
+      "slug": "gemini-4-argon",
+      "release_date": "2026-09-30",
+      "model_creator": {
+        "id": "faddc6d9-2c14-445f-9b28-56726f59c793",
+        "name": "Google"
+      }
+    },
+    {
+      "id": "df5bf99d-d228-4715-b41b-19ca86118777",
+      "name": "Claude Opus 5.5 (Xhigh, Default Fallback)",
+      "slug": "claude-opus-5-5-xhigh",
+      "release_date": "2026-09-22",
+      "model_creator": {
+        "id": "f0aa413f-e8ae-4fcd-9c48-0e049f4f3128",
+        "name": "Anthropic"
+      }
+    },
+    {
+      "id": "e05a4828-0536-4876-870d-a235023f992b",
+      "name": "GPT-6 Astra (High)",
+      "slug": "gpt-6-astra-high",
+      "release_date": "2026-09-03",
+      "model_creator": {
+        "id": "e67e56e3-15cd-43db-b679-da4660a69f41",
+        "name": "OpenAI"
+      }
+    },
+    {
+      "id": "e97a4ef5-e817-480e-9595-12f81dc4974f",
+      "name": "GPT-6 Astra (Medium)",
+      "slug": "gpt-6-astra-medium",
+      "release_date": "2026-09-03",
+      "model_creator": {
+        "id": "e67e56e3-15cd-43db-b679-da4660a69f41",
+        "name": "OpenAI"
+      }
+    },
+    {
+      "id": "e994a6e0-d36b-4dab-8ae1-c1b469e4d9e2",
+      "name": "Muse Wonder Full (Max)",
+      "slug": "muse-wonder-full",
+      "release_date": "2026-10-12",
+      "model_creator": {
+        "id": "e1694725-0192-4e54-b1b8-c97e816c6cbe",
+        "name": "Meta"
+      }
+    },
+    {
+      "id": "f314eade-2232-44bf-a3ab-9b326bc67de6",
+      "name": "Claude Opus 5.5 (High, Default Fallback)",
+      "slug": "claude-opus-5-5-high",
+      "release_date": "2026-09-22",
+      "model_creator": {
+        "id": "f0aa413f-e8ae-4fcd-9c48-0e049f4f3128",
+        "name": "Anthropic"
+      }
+    },
+    {
+      "id": "fdc1913b-9497-45ef-83f7-17dae756f37e",
+      "name": "Claude Fable 5.2 (High, Default Fallback)",
+      "slug": "claude-fable-5-2-high",
+      "release_date": "2026-11-09",
+      "model_creator": {
+        "id": "f0aa413f-e8ae-4fcd-9c48-0e049f4f3128",
+        "name": "Anthropic"
+      }
+    }
+  ]
+}

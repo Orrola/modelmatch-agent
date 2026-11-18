@@ -55,7 +55,7 @@ class WriterFailureModel(ScriptedModel):
             elif self.mode == "extra_evidence":
                 value["evidence_ids"] = value["evidence_ids"] + ["synthetic-invented-reference"]
             elif self.mode == "candidate":
-                value["candidate_ids"] = list(reversed(value["candidate_ids"]))
+                value["candidate_ids"] = ["synthetic-altered-candidate"]
             elif self.mode == "validation":
                 value["validation_steps"] = []
             return self.text(value)

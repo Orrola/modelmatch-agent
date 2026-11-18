@@ -12,6 +12,7 @@ import uuid
 from collections import deque
 from copy import deepcopy
 from decimal import Decimal
+from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -256,6 +257,17 @@ class WebHooks(PanelHooks):
                 self.emit({"type": "tool_trace", "call": deepcopy(call)})
 
 
+@dataclass
+class AnalysisRun:
+    """Private persistence context with backward-compatible two-value unpacking."""
+    result: dict
+    prepared: dict | None
+    selection_context: dict | None
+
+    def __iter__(self):
+        return iter((self.result, self.prepared))
+
+
 class AnalysisService:
     """Single-worker MVP with bounded ephemeral evidence storage; no disk session dependency."""
 
@@ -286,15 +298,16 @@ class AnalysisService:
         now = time.monotonic()
         self.saved = {k: v for k, v in self.saved.items() if v["expires"] > now}
 
-    def remember(self, result, prepared):
+    def remember(self, result, prepared, selection_context=None):
         self.prune()
-        size = len(json.dumps([result, prepared], default=str).encode())
+        size = len(json.dumps([result, prepared, selection_context], default=str).encode())
         if size > self.max_saved_bytes // 2:
             return None
         while self.saved and (len(self.saved) >= self.capacity or sum(v["size"] for v in self.saved.values()) + size > self.max_saved_bytes):
             del self.saved[next(iter(self.saved))]
         key = secrets.token_urlsafe(32)
-        self.saved[key] = {"expires": time.monotonic() + self.ttl, "result": deepcopy(result), "prepared": prepared, "size": size}
+        self.saved[key] = {"expires": time.monotonic() + self.ttl, "result": deepcopy(result),
+                           "prepared": deepcopy(prepared), "selection_context": deepcopy(selection_context), "size": size}
         return key
 
     async def run(self, request, hooks):
@@ -328,7 +341,7 @@ class AnalysisService:
         result["execution_mode"] = "offline_synthetic" if self.offline else "live_vertex"
         result["integration_usage"] = {"model_requests": budget.calls if budget else 0,
             "records": budget.records if budget else [], "actual_cost_usd": None}
-        return result, workflow.prepared() if "decision" in result else None
+        return AnalysisRun(result, workflow.prepared() if "decision" in result else None, getattr(workflow, "selection_context", None))
 
 
 def install_modelmatch(app):
@@ -343,6 +356,10 @@ def install_modelmatch(app):
     @router.get("/modelmatch.js")
     def javascript():
         return FileResponse(ROOT / "static/modelmatch.js", media_type="text/javascript", headers={"Cache-Control": "no-cache"})
+
+    @router.get("/recommendation-views.js")
+    def recommendation_javascript():
+        return FileResponse(ROOT / "static/recommendation_views.js", media_type="text/javascript", headers={"Cache-Control": "no-cache"})
 
     @router.get("/modelmatch.css")
     def stylesheet():
@@ -360,11 +377,12 @@ def install_modelmatch(app):
     async def execute(body, emit, run_id=None):
         hooks = WebHooks(emit, run_id)
         try:
-            result, prepared = await asyncio.wait_for(service.run(body, hooks), timeout=190)
+            outcome = await asyncio.wait_for(service.run(body, hooks), timeout=190)
+            result, prepared = outcome
             result.setdefault("run_id", hooks.run_id)
             hooks.finish(result.get("status") not in ("error", "insufficient_evidence"))
             result["tool_calls"] = hooks.calls
-            key = service.remember(result, prepared)
+            key = service.remember(result, prepared, getattr(outcome, "selection_context", None))
             return {"analysis_id": key, "result": result, "run_id": hooks.run_id}
         except asyncio.CancelledError:
             log_metadata("request_cancelled", run_id=hooks.run_id)
@@ -432,9 +450,18 @@ def install_modelmatch(app):
         original = saved["result"]
         decision = decide(saved["prepared"], task_type=original["decision"]["weights"]["task_type"], user_alpha=body.user_alpha)
         original_alpha = original["decision"]["weights"]["alpha"]
+        from tools.selection_pipeline import selection_for_decision
+        selection_fields, _ = selection_for_decision(decision, saved["prepared"], frozen_context=saved.get("selection_context"))
+        original_selection = original.get("selection")
+        current_selection = selection_fields["selection"]
+        writer_selection_id = original_selection["selection_id"] if original_selection else None
+        current_selection_id = current_selection["selection_id"] if current_selection else None
         return {"analysis_id": body.analysis_id, "decision": decision, "research_rerun": False,
                 "run_id": original.get("run_id"),
-                "writer_alpha": original_alpha, "writer_explanation_stale": original_alpha != decision["weights"]["alpha"]}
+                **selection_fields, "writer_alpha": original_alpha, "writer_selection_id": writer_selection_id,
+                "writer_narrative_available": original.get("writer_status") == "accepted",
+                "writer_explanation_stale": original_alpha != decision["weights"]["alpha"]
+                    or writer_selection_id != current_selection_id or selection_fields["selector"]["status"] == "unavailable"}
 
     @router.post("/chat")
     async def chat(body: ChatInput):

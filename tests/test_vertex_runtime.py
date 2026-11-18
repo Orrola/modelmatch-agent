@@ -92,8 +92,11 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         model = MeteredModel(ScriptedModel(), "gemini-offline-test", budget, self.config)
         result = await ModelMatchWorkflow(model, model, settings=self.config.settings(), snapshot_loader=AsyncMock(return_value=snapshot)).run(USER_INPUT)
         self.assertEqual(result["status"], "supported", result.get("error"))
-        self.assertEqual(budget.calls, 11)
-        self.assertEqual(len(budget.records), 11)
+        self.assertEqual(budget.calls, 10)
+        self.assertEqual(len(budget.records), 10)
+        self.assertEqual(sum(record["stage"] == "dispatch" for record in budget.records), 1)
+        self.assertEqual(sum(record["stage"] == "review" for record in budget.records), 1)
+        self.assertEqual(sum(record["stage"] == "writer" for record in budget.records), 1)
         self.assertTrue(all(record["status"] == "success" for record in budget.records))
 
     async def test_grounding_backend_uses_separate_search_only_vertex_request(self):

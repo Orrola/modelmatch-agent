@@ -12,13 +12,13 @@ import inspect
 from copy import deepcopy
 from dataclasses import asdict, replace
 
-from agents import ModelBehaviorError, RunConfig, RunHooks, Runner, RunContextWrapper
+from agents import ModelBehaviorError, RunConfig, RunHooks, Runner, RunContextWrapper, ToolsToFinalOutputResult
 from agents.tool_context import ToolContext
 from pydantic import ValidationError
 
 from modelmatch_agents import create_team, low_thinking_settings
 from modelmatch_schemas import (
-    AgentCallContext, LEAD_OUTPUT_TYPES, OrchestrationLimits, ParsedPlan, ResearcherOutput, WriterOutput,
+    AgentCallContext, DispatchComplete, LEAD_OUTPUT_TYPES, OrchestrationLimits, ParsedPlan, ResearcherOutput, WriterOutput,
 )
 from tools.artificial_analysis import numeric, utc_now
 from tools.decision import TASK_DEFAULTS, decide, evaluate_operations, resolve_weights
@@ -123,6 +123,8 @@ class WorkflowHooks(RunHooks):
         if context.context.role == "Lead" and calls:
             self.workflow.batches.append({"stage": context.context.stage, "calls": calls})
             self.workflow.event("dispatch_batch", "Lead", stage=context.context.stage, calls=calls)
+            if context.context.stage == "dispatch":
+                self.workflow.validate_initial_authorization(response.output)
         await self._forward("on_llm_end", context, agent, response)
 
     async def on_tool_start(self, context, agent, tool):
@@ -175,6 +177,7 @@ class ModelMatchWorkflow:
         self._authorized_followups = ()
         self.followup_outcomes = None
         self.clarification_suggestions = []
+        self.selection_context = None
 
     def event(self, kind, agent, **fields):
         event = {"seq": len(self.trace), "type": kind, "agent": agent, "run_id": self.run_id,
@@ -239,12 +242,15 @@ class ModelMatchWorkflow:
         self._lead_running = True
         agent = self.team.lead
         original_settings = agent.model_settings
+        original_tool_behavior = agent.tool_use_behavior
         output_type = LEAD_OUTPUT_TYPES[stage]
         message = {"role": "user", "content": json.dumps({**payload, "stage": stage}, allow_nan=False)}
         inputs = [*(self.history or []), message]
         # These are installed SDK Agent fields, not invented Runner parameters.
         # A workflow owns one Lead and never runs its stages concurrently.
         agent.output_type = output_type
+        if stage == "dispatch":
+            agent.tool_use_behavior = self.complete_initial_dispatch
         stage_settings = low_thinking_settings(original_settings) if stage == "parse" else original_settings
         agent.model_settings = replace(stage_settings,
             parallel_tool_calls=stage in ("dispatch", "followup"), tool_choice=None,
@@ -263,7 +269,70 @@ class ModelMatchWorkflow:
             return output
         finally:
             agent.model_settings = original_settings
+            agent.tool_use_behavior = original_tool_behavior
             self._lead_running = False
+
+    def validate_initial_authorization(self, output):
+        """Reject incomplete or expanded initial batches before any SDK tool runs."""
+        calls = [item for item in output if getattr(item, "type", None) == "function_call"]
+        batches = [batch for batch in self.batches if batch["stage"] == "dispatch"]
+        expected = {f"research_{role.lower()}" for role in self.allowed}
+        if len(batches) != 1 or len(calls) != len(expected) or {item.name for item in calls} != expected:
+            raise WorkflowError("researchers_not_dispatched_in_one_model_turn")
+        for call in calls:
+            try:
+                arguments = json.loads(call.arguments)
+            except (TypeError, ValueError) as error:
+                raise WorkflowError("research_dispatch_not_authorized", "invalid_dispatch_arguments") from error
+            if (not isinstance(arguments, dict) or set(arguments) != {"task", "model_ids"}
+                    or not isinstance(arguments["task"], str) or not arguments["task"].strip()
+                    or arguments["model_ids"] != []):
+                raise WorkflowError("research_dispatch_not_authorized", "initial_round_requires_shared_catalog")
+
+    def complete_initial_dispatch(self, context, results):
+        """Finalize only a fully validated successful SDK batch, never its first tool."""
+        if (context.context is not self.lead_context or not self._lead_running
+                or self._stage != "dispatch" or self.lead_context.stage != "dispatch"):
+            raise WorkflowError("research_dispatch_not_allowed")
+        expected = {f"research_{role.lower()}" for role in self.allowed}
+        batches = [batch for batch in self.batches if batch["stage"] == "dispatch"]
+        if (len(batches) != 1 or len(batches[0]["calls"]) != len(expected)
+                or set(batches[0]["calls"]) != expected or self.dispatched != set(self.allowed)
+                or len(results) != len(expected) or {r.tool.name for r in results} != expected):
+            raise WorkflowError("researchers_not_dispatched_in_one_model_turn")
+        failed = False
+        for result in results:
+            role = result.tool.name[-1].upper()
+            try:
+                value = json.loads(result.output)
+            except (TypeError, ValueError) as error:
+                raise WorkflowError("initial_dispatch_result_invalid") from error
+            if not isinstance(value, dict) or value.get("role") != role:
+                raise WorkflowError("initial_dispatch_result_invalid")
+            if value.get("status") == "failed" and role in self.errors and role not in self.role_results:
+                # Preserve explicit failed-role review/recovery; this callback does not accept it.
+                failed = True
+                continue
+            payload = self.role_results.get(role)
+            ends = [event for event in self.trace if event["type"] == "researcher_end"
+                    and event["role"] == role and event.get("status") == "completed"]
+            if (value.get("status") != "completed" or role in self.errors or not payload or len(ends) != 1
+                    or payload["snapshot_id"] != self.snapshot["snapshot_id"]
+                    or set(payload["models"]) != {row["id"] for page in self.snapshot["pages"] for row in page["data"]}
+                    or any(type(value.get(key)) is not int or value[key] != count for key, count in (
+                        ("model_count", len(payload["models"])),
+                        ("valid_evidence_count", len(payload["valid_evidence"])),
+                        ("missing_model_count", len(payload["missing_manifest"]))))):
+                raise WorkflowError("initial_dispatch_result_invalid")
+        if failed:
+            self.event("dispatch_completion_deferred", "Lead", reason="explicit_researcher_failure")
+            return ToolsToFinalOutputResult(is_final_output=False, final_output=None)
+        starts = [event for event in self.trace if event["type"] == "researcher_start" and event["round_number"] == 0]
+        if (len(starts) != len(expected) or len({event["context_id"] for event in starts}) != len(expected)
+                or any(event["context_id"] == self.lead_context.context_id or event["model_ids"] for event in starts)):
+            raise WorkflowError("initial_dispatch_result_invalid")
+        self.event("dispatch_completion_validated", "Lead", source="sdk_tool_results")
+        return ToolsToFinalOutputResult(is_final_output=True, final_output=DispatchComplete(completed=True))
 
     def prepared(self):
         relevance = self.relevance or RelevanceDecision(self.plan.task_description, None, "none", "Researcher B has not established a relevant index.")
@@ -645,24 +714,38 @@ class ModelMatchWorkflow:
         self.event("decision_completed", "Decision Tool")
         self.diagnostics.stage("decision", "accepted", "Decision Tool")
         from recommendation import render_recommendation, writer_payload, validate_writer
-        payload = writer_payload(decision)
+        from tools.selection_pipeline import selection_for_decision
+        selection_fields, self.selection_context = selection_for_decision(decision, prepared, snapshot=self.snapshot)
+        selection = selection_fields["selection"]
+        log_metadata("recommendation_selection", run_id=self.run_id,
+                     snapshot_id=decision["snapshot_id"], **selection_fields["selector"],
+                     selection_id=selection["selection_id"] if selection else None)
+        self.event("selector_unavailable" if selection is None else "selection_completed", "Decision Tool")
+        payload = writer_payload(decision, selection)
         writer_context = AgentCallContext(self, "Writer", str(uuid.uuid4()), stage="write")
         fallback = False
         writer_error = None
         self.controller_stage = "writer"
-        try:
-            intent, _ = await self._run(self.team.writer, json.dumps(payload), writer_context, WriterOutput)
-            validate_writer(intent, payload)
-            self.diagnostics.stage("writer", "accepted", "Writer")
-        except Exception as error:
-            fallback = True
-            writer_error = failure_details(error)
-            self.diagnostics.stage("writer", "failed", "Writer", error=writer_error)
-            self.event("writer_rejected", "Writer", reason=writer_error["category"], error=writer_error)
-            self.diagnostics.stage("writer", "fallback", "Writer", error=writer_error)
+        if selection is None:
+            self.diagnostics.stage("writer", "skipped", "Writer", code="selector_unavailable")
             intent = WriterOutput(candidate_ids=payload["candidate_ids"], evidence_ids=payload["evidence_ids"], validation_steps=["task_pilot", "check_index_versions"])
-        return {"status": payload["status"], "decision": decision, "markdown": render_recommendation(decision, intent),
-                "writer_fallback": fallback, "writer_error": writer_error, "plan": self.plan.model_dump()}
+        else:
+            try:
+                intent, _ = await self._run(self.team.writer, json.dumps(payload), writer_context, WriterOutput)
+                validate_writer(intent, payload)
+                self.diagnostics.stage("writer", "accepted", "Writer")
+            except Exception as error:
+                fallback = True
+                writer_error = failure_details(error)
+                self.diagnostics.stage("writer", "failed", "Writer", error=writer_error)
+                self.event("writer_rejected", "Writer", reason=writer_error["category"], error=writer_error)
+                self.diagnostics.stage("writer", "fallback", "Writer", error=writer_error)
+                intent = WriterOutput(candidate_ids=payload["candidate_ids"], evidence_ids=payload["evidence_ids"], validation_steps=["task_pilot", "check_index_versions"])
+        return {"status": payload["status"], "decision": decision, "markdown": render_recommendation(decision, intent, selection),
+                **selection_fields, "writer_fallback": fallback, "writer_error": writer_error,
+                "writer_status": "skipped" if selection is None else "fallback" if fallback else "accepted",
+                "report_fallback": selection is None or fallback, "report_basis": payload["recommendation_basis"],
+                "plan": self.plan.model_dump()}
 
     async def run(self, user_input: str):
         if self.started:

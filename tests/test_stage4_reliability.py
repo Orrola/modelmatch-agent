@@ -208,7 +208,7 @@ class Stage4WorkflowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["diagnostics"]["stages"]["writer"]["status"], "accepted")
         record = next(r for r in self.budget.records if r["stage"] == "writer")
         self.assertEqual(record["output_diagnostics"]["validation_category"], "valid")
-        for eid in writer_payload(result["decision"])["evidence_ids"]:
+        for eid in writer_payload(result["decision"], result["selection"])["evidence_ids"]:
             self.assertIn(eid, result["markdown"])
 
     async def test_authorized_controller_batch_has_parallel_fresh_contexts_and_sdk_traces(self):

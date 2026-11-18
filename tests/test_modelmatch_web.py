@@ -146,11 +146,11 @@ class WebApplicationTests(unittest.IsolatedAsyncioTestCase):
             run.assert_not_awaited()
         self.assertEqual(self.service.saved[key]["result"], original)
 
-    async def test_recalculation_reports_matching_original_writer_weights(self):
+    async def test_recalculation_marks_changed_weight_source_selection_stale(self):
         done = await self.analyze()
         self.assertEqual(done["result"]["decision"]["weights"]["alpha"], .3)
         result = (await self.client.post("/api/modelmatch/recalculate", json={"analysis_id": done["analysis_id"], "user_alpha": .3})).json()
-        self.assertFalse(result["writer_explanation_stale"])
+        self.assertTrue(result["writer_explanation_stale"])
 
     async def test_expired_and_evidenceless_analysis_ids_have_explicit_errors(self):
         done = await self.analyze(question="help")

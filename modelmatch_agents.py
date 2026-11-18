@@ -114,8 +114,9 @@ Only suggest blocking clarification for an absent/unclear concrete task, an expl
 requested monthly calculation missing workload, or invalid stated mandatory inputs.
 When no task can be extracted, leave task_description/task_quote empty and suggest a task question.
 dispatch: call research_a, research_b, research_c ONCE EACH IN THE SAME MODEL TURN so they run
-in parallel. Use empty model_ids to cover the shared catalog. After tools finish, return
-only the DispatchComplete acknowledgment. It does not advance the workflow.
+in parallel. Use empty model_ids to cover the shared catalog. Python validates successful
+tool results and completes DispatchComplete without another generation. If explicit failed-role
+outcomes are returned for review, acknowledge dispatch only; never claim failed research succeeded.
 review: examine the supplied deterministic gaps, model IDs, index versions, task relevance,
 constraints and failed runs. The same snapshot is fixed; do not retry irretrievable nulls or
 official specifications that have no configured lookup. Request at most one targeted task per affected role
@@ -163,8 +164,9 @@ Never treat the grounding model's prose alone as a verified specification."""),
     writer = Agent(
         name="Writer", model=model, model_settings=low_thinking_settings(settings), output_type=WriterOutput,
         instructions="""Select an evidence-grounded recommendation from the provided fixed decision.
-Return exactly the supplied top candidate IDs in their existing order, or an empty list when no
-numeric ranking is supported. Copy the COMPLETE supplied evidence_ids collection, exactly:
+Return exactly the supplied canonical candidate IDs in their role order, or the supplied empty
+list when no recommendation is supported. Do not replace them with Raw Top 3, fill unavailable
+slots, or add Potential Alternatives. Copy the COMPLETE supplied evidence_ids collection, exactly:
 no omissions, substitutions or additional IDs. The required collection contains ALL observed
 canonical evidence for the supplied candidates, not just a selected subset of citations.
 Preserve candidate_ids in their supplied order. Return nonempty validation_steps using only

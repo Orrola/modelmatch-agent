@@ -150,6 +150,45 @@ Recalculation request:
 
 It returns the original analysis ID, the existing engine's decision, `research_rerun: false`, `writer_alpha`, and `writer_explanation_stale`. The original result and Writer report are retained unchanged. Only the selected ranking changes. Candidate status groups, evidence, operational penalties, alpha policy and sensitivity use the existing engine, not frontend arithmetic. `null` resets to the task default rather than a hardcoded 0.60. An expired/evicted/missing ID returns 404; an analysis without decision evidence returns 409.
 
+## Deterministic recommendation selection
+
+Successful Decision results include additive `selection`, `selector`, `writer_status`,
+`report_basis`, and `report_fallback` fields. Original `decision`, complete raw rankings,
+evidence and scores are preserved. `selection` contains `selection_id`, snapshot fingerprint,
+mapping/policy versions, coverage counts, recommendation slots and separate unscored
+Potential Alternatives. Slot order is `best_overall`, `lower_cost_alternative`,
+`different_family`: zero to three slots may be selected. Role order is not Raw Ranking
+order. Missing slots carry reasons. Family grouping is curated AA-label evidence, not
+verified underlying model equivalence; new snapshots do not inherit older audited groups.
+
+`selector.status` is `available`, `limited_metadata`, or `unavailable`. Unmapped families
+remain unknown. Metadata/coverage/Selector errors preserve Decision and return a sanitized
+category and phase under `selector.error`. Selector is local deterministic processing,
+not an Agent stage or additional provider call. If unavailable, `selection=null`, Writer
+is `skipped`, and the report is explicitly a deterministic fallback. Real Writer rejection
+remains `writer_status=fallback`, `writer_fallback=true`; neither is accepted generation.
+A valid zero-slot selection allows strict Writer validation of empty candidate/evidence
+lists with nonempty next steps, without supporting numeric recommendations.
+
+Writer inputs, acceptance checks and rendering use the same canonical selection.
+Candidate IDs/order must match exactly and every observed evidence ID for those candidates
+is required. Potential Alternatives are excluded from Writer candidates and keep `S=null`.
+
+Recalculation returns existing fields plus updated `selection`/`selector`,
+`writer_selection_id`, and `writer_narrative_available` (an accepted original Writer output
+exists). Decision and Selector reuse privately frozen prepared evidence, exact snapshot
+pages, identity sidecar, family mapping and version identities. There is no AA/Gemini call
+or current mapping reload. `writer_explanation_stale` is true if alpha or selection identity
+changes, or selection is unavailable; a weight-source change can change identity too.
+Original analysis/narrative remains immutable. Missing or incompatible context reports
+Selector-unavailable while preserving recalculated raw Decision. Existing retention/size
+limits and single-worker in-memory state still apply; instances do not share sessions.
+
+SSE `done.result`, provisional `/chat.result` and compatibility `GET /run` expose the
+additive fields with unchanged stage/trace envelopes. The UI reads canonical roles and
+truthful Writer status with minimal compatibility changes. Expanded coverage/Potential
+Alternatives presentation belongs to Phase 6C. `/chat` course-contract verification is pending.
+
 ## Provisional `/chat` contract
 
 No authoritative Project 2 `/chat` contract was found. Cleanup identified a local previous Project 1 implementation with request fields `message/session_id` and response fields `response/session_id/tool_calls`; this is an observed prior implementation, not an official assignment specification. The current adapter differs and compatibility with the grader is **pending**, not claimed. Cleanup preserves this existing contract rather than silently changing it. This endpoint is not an OpenAI Chat Completions implementation.
@@ -177,3 +216,24 @@ Each analysis, including compatibility `/run`, uses the same service limits: 24 
 Evidence sessions are **ephemeral, single-process memory**, retained for at most 30 minutes, eight sessions, and approximately 64 MiB of serialized saved content (not a guarantee on Python heap size). Results over 32 MiB are not retained for recalculation. Eviction/restart invalidates analysis IDs; IDs are unguessable bearer capabilities and should not be shared. Rate/concurrency limits are process-local. AA cache in `/tmp/modelmatch-aa` is an optimization; an empty cache can fetch the live API with AA_API_KEY. No session correctness relies on disk persistence.
 
 Before Cloud Run production deployment: add authentication/access control, tenant-scoped shared evidence storage with TTL and encryption, distributed request budgets/rate limits, and authenticated trace access. Multiple instances/workers are unsupported for reliable recalculation until shared storage is added. Validate the container, set an HTTP timeout exceeding the bounded workflow, review concurrency, verify the runtime service account/Vertex permissions and AA secret injection, and verify the course contract. Do not expose this unauthenticated research endpoint publicly as-is. No IAM/API changes, billable tests, or deployment are automatic.
+
+
+## Recommendation presentation metadata
+
+An additive `model_identity` projection accompanies successful Selector results and
+recalculation responses. It copies the validated, frozen sidecar binding and exact model
+identities, creator fields, reviewed configuration labels and family statuses. Its `families`
+map contains existing curated family labels and explicit `model_ids` in exact-ID order.
+This is a read-only presentation projection, not a new family grouping or selection policy.
+The projection does not contain snapshot pages, credentials, prompts or benchmark scores.
+It is excluded from canonical selection hashing and Writer input; numeric evidence stays
+in the original Decision. Selector failure returns `model_identity: null`.
+
+The UI checks snapshot, retrieval, data-mode and mapping compatibility before using these
+identities. Missing/incompatible metadata stays unknown. Family expansion reads explicit
+server membership; JavaScript does not normalize names or infer grouping. Potential
+Alternatives render the existing U-only/G-only and eligibility buckets, initially two per
+bucket with expansion only to returned entries. Backend omissions remain disclosed; there
+is no hidden re-fetch. Current and original Raw Rankings keep server ordering and scores.
+`GET /recommendation-views.js` serves the local presentation component; existing application
+endpoints and SSE framing are unchanged. Official course `/chat` verification remains pending.

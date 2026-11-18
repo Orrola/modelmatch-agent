@@ -1,4 +1,5 @@
 // Pure presentation and transport contracts; real DOM flows are exercised by ui_smoke.
+load('static/recommendation_views.js');
 load('static/modelmatch.js');
 function assert(value, message) { if (!value) throw new Error(message); }
 for (const key of ['fully_evaluable', 'provisional', 'unverified', 'ineligible']) assert(labels[key], 'Distinct candidate statuses');
@@ -77,6 +78,20 @@ progress('Writer','fallback','writer',false);
 assert(state.stages.get('writer')==='fallback','Fallback cannot count as accepted Writer output');
 finishProgress({diagnostics:{stages:{review:{agent:'Lead',stage:'review',status:'failed'},decision:{agent:'Decision Tool',stage:'decision',status:'not_reached'}}}});
 assert(state.stages.get('review')==='failed' && state.stages.get('decision')==='not_reached','A rejected review does not imply a decision ran');
+// Canonical roles replace only the presentation shortlist; raw candidates remain unchanged.
+const rawIds=Object.keys(fixture.decision.candidates);
+const canonical={slots:{best_overall:{status:'selected',candidate:{model_id:rawIds[0]}},lower_cost_alternative:{status:'unavailable',candidate:null},different_family:{status:'selected',candidate:{model_id:rawIds[1]}}}};
+assert(recommendationRows(fixture.decision,canonical,{status:'limited_metadata'}).map(c=>c.model_id).join(',')===[rawIds[0],rawIds[1]].join(','),'Canonical role ordering is used rather than Raw Top 3');
+assert(recommendationRows(fixture.decision,null,{status:'unavailable'}).length===0,'Unavailable selection never silently renders Raw Top 3');
+state.stages=new Map();
+finishProgress({writer_status:'skipped',writer_fallback:false,selector:{status:'unavailable'}});
+assert(state.stages.get('writer')==='skipped','A skipped Writer is not accepted merely because writer_fallback is false');
+const acceptedWriter={...fixture,writer_status:'accepted',selection:canonical,selector:{status:'limited_metadata'}};
+state.original=acceptedWriter;renderOriginalSummary();
+assert(document.getElementById('report').children[1].children.length===2,'Original report uses the same selected candidates');
+state.original={...fixture,writer_status:'skipped',selection:null,selector:{status:'unavailable'}};
+renderOriginalSummary();
+assert(document.getElementById('report').children[2].textContent.includes('No Writer generation'),'Original skipped report is not labeled as an accepted Writer');
 state.analysisId='synthetic-id';state.original=fixture;
 const original=JSON.stringify(fixture);const requests=[];
 renderDecision=function(d){state.decision=d;};
