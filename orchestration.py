@@ -625,6 +625,10 @@ class ModelMatchWorkflow:
                 await asyncio.gather(*jobs, return_exceptions=True)
             self._controller_dispatch_active = False
 
+    def validate_requirements(self, plan, user_input):
+        """Adapters may validate user-history provenance before the unchanged policy."""
+        return validate_plan(plan, user_input)
+
     async def _workflow(self, user_input):
         self.plan = await self.lead("parse", {"user_input": user_input, "task_weight_policy": TASK_DEFAULTS})
         proposed = self.plan.task_type
@@ -633,7 +637,7 @@ class ModelMatchWorkflow:
                                "task_type": self.plan.task_type, "reason": reason}
         questions = []
         try:
-            self.requirements, self.workload, self.weights = validate_plan(self.plan, user_input)
+            self.requirements, self.workload, self.weights = self.validate_requirements(self.plan, user_input)
         except ValueError as error:
             # All messages originate in local schema/input validators, not provider
             # exception bodies. Optional model suggestions cannot create requirements.

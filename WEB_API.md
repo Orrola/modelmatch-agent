@@ -1,4 +1,4 @@
-# ModelMatch web application and provisional API
+# ModelMatch web application and Project 1-compatible chat API
 
 ## Reliability metadata
 
@@ -40,9 +40,10 @@ business validation and extraction correctness are separate results. Missing sem
 expectations require manual review; historical comparisons are not randomized A/B
 evidence. Never treat missing usage as zero or a successful parse as a correct recommendation.
 
-The existing request bodies, endpoints and SSE framing are preserved. Additive fields
-include a server-generated `run_id` on SSE events, final results and `/chat` envelopes;
-streaming responses also expose `X-ModelMatch-Run-ID`. `/run` forwards that same identity.
+Analysis request bodies, endpoints and SSE framing are preserved. `/chat` now restores
+the confirmed Project 1 shape. A server-generated `run_id` correlates SSE events and
+final analysis results; `/chat` keeps correlation in internal diagnostics and tool identities.
+Streaming responses expose `X-ModelMatch-Run-ID`. `/run` forwards that same identity.
 Final results include `diagnostics` (stage history, current states, first observed failure),
 `classification`, and `writer_error` when applicable. The first observed failure may have
 been recovered by an authorized follow-up; inspect the final states and workflow status too.
@@ -90,7 +91,7 @@ MODELMATCH_OFFLINE=0 GOOGLE_CLOUD_PROJECT=ieor4570-yg3133 GOOGLE_CLOUD_LOCATION=
 
 Open `http://127.0.0.1:8000/modelmatch`, enter a task, and click **Run analysis**. Live Mode is the default when `MODELMATCH_OFFLINE` is unset or `0`; the explicit `0` above also overrides an old testing setting. Existing local `.env` supplies AA_API_KEY and configured Gemini model IDs. Vertex uses the existing ADC identity, not a new Gemini API key. Credentials remain server-side. If ADC or API access is unavailable, the analysis reports failure rather than switching to fictional models.
 
-Starting the server, opening the page, and health/config checks do not generate model requests or fetch AA data. Clicking Run analysis is the explicit action that submits `approve_live: true` in Live Mode. The existing API still rejects direct live requests without that flag. The approved Lead → parallel A/B/C → same Lead Review → Decision → Writer workflow then streams its actual result to the three views. Alpha adjustments use the deterministic recalculation endpoint and do not run Gemini again.
+Starting the server, opening the page, and health/config checks do not generate model requests or fetch AA data. Clicking Run analysis is the explicit action that submits `approve_live: true` in Live Mode. The analyze API still rejects direct live requests without that flag. The separate `/chat` adapter uses the server-side evaluation gate described below. The approved Lead → parallel A/B/C → same Lead Review → Decision → Writer workflow then streams its actual result to the three views. Alpha adjustments use the deterministic recalculation endpoint and do not run Gemini again.
 
 Both `/` and `/modelmatch` serve ModelMatch AI. `GET /run?mode=modelmatch&question=...` remains a compatibility SSE adapter over the same service, including the previous start/run_id and done/markdown/result fields; omitting mode now also selects ModelMatch. Explicit GET research starts live work just as an explicit POST does. The old Wikipedia mode and context-dump/browser-panel routes are removed. Grounding remains disabled in this web flow; missing official specifications and unknown hard constraints retain their existing evidence/eligibility behavior.
 
@@ -105,7 +106,7 @@ Run regression and HTTP checks without provider calls:
 MODELMATCH_OFFLINE=1 .venv/bin/python -m scripts.web_smoke
 ```
 
-The HTTP smoke script starts a temporary single-worker server and checks loopback HTTP, assets, SSE, provisional `/chat`, and deterministic weight changes. It does not call Gemini or AA. The test suite uses scripted SDK models and mocked HTTP transports.
+The HTTP smoke script starts a temporary single-worker server and checks loopback HTTP, assets, SSE, Project 1-compatible `/chat`, and deterministic weight changes. It does not call Gemini or AA. The test suite uses scripted SDK models and mocked HTTP transports.
 
 Provider calls may incur charges only after a live analysis is initiated. No live end-to-end acceptance or deployment is implied by the offline wiring tests.
 
@@ -113,10 +114,10 @@ Provider calls may incur charges only after a live analysis is initiated. No liv
 
 - `GET /modelmatch`: dedicated UI, with local JS/CSS and no CDN runtime dependency.
 - `GET /healthz`: local process health only; does not verify credentials or providers.
-- `GET /api/modelmatch/config`: execution mode, provisional contract status, evidence retention, and disabled Grounding state.
+- `GET /api/modelmatch/config`: execution mode, confirmed chat-shape status, evidence retention, and disabled Grounding state.
 - `POST /api/modelmatch/analyze`: JSON requirements, SSE response. Requests never use GET query parameters for requirement text.
 - `POST /api/modelmatch/recalculate`: original analysis ID and nullable `user_alpha`; `null` restores the existing task policy. No research or Writer calls occur.
-- `POST /chat`: **provisional adapter**, described below.
+- `POST /chat`: Project 1-compatible, bounded conversation adapter, described below.
 
 Analysis request example:
 
@@ -184,22 +185,101 @@ Original analysis/narrative remains immutable. Missing or incompatible context r
 Selector-unavailable while preserving recalculated raw Decision. Existing retention/size
 limits and single-worker in-memory state still apply; instances do not share sessions.
 
-SSE `done.result`, provisional `/chat.result` and compatibility `GET /run` expose the
-additive fields with unchanged stage/trace envelopes. The UI reads canonical roles and
-truthful Writer status with minimal compatibility changes. Expanded coverage/Potential
-Alternatives presentation belongs to Phase 6C. `/chat` course-contract verification is pending.
+SSE `done.result` and compatibility `GET /run` retain the additive selection fields and
+full stage/trace envelopes. `/chat` renders the canonical recommendation in `response`
+and projects actual tool calls; it does not expose internal `result` or diagnostic state.
 
-## Provisional `/chat` contract
+## Project 1-compatible `/chat` contract
 
-No authoritative Project 2 `/chat` contract was found. Cleanup identified a local previous Project 1 implementation with request fields `message/session_id` and response fields `response/session_id/tool_calls`; this is an observed prior implementation, not an official assignment specification. The current adapter differs and compatibility with the grader is **pending**, not claimed. Cleanup preserves this existing contract rather than silently changing it. This endpoint is not an OpenAI Chat Completions implementation.
+The instructor confirmed the Project 1 response shape and agent attribution for nested
+sub-agent tool calls. This confirms this interface requirement, not every Project 2 rubric item.
+This endpoint is not an OpenAI Chat Completions implementation.
 
-Request: the same optional analysis fields, with required `message` replacing `question`. Send the full task plus any clarification; there is no automatic conversation memory. Example:
+Request (only these fields are accepted):
 
 ```json
-{"message": "Analyze financial documents for a finance team.", "approve_live": true}
+{"message": "Analyze financial documents for a finance team.", "session_id": null}
 ```
 
-Response: `contract: provisional-modelmatch-chat-v1`, `contract_verified: false`, `reply` (report text), `analysis_id`, `result`, and agent-attributed `tool_calls` as above. Task clarification/error status remains explicit within `result`. Transport/validation errors use FastAPI error responses. Replace the outer adapter when the authoritative course contract is supplied; preserve the inner trace records and research implementation.
+`message` is a nonblank string of 1–6,000 characters. `session_id` is optional/null for a
+new conversation; reuse the returned opaque ID for subsequent turns. Credential-like
+messages are rejected without echoing their contents. Do not send `approve_live`,
+`analysis_id`, or structured analysis fields to this endpoint.
+
+Successful turns return exactly these top-level fields:
+
+```json
+{"response": "Answer or clarification text", "session_id": "opaque-chat-id", "tool_calls": []}
+```
+
+`response` is the canonical report, clarification, saved-evidence answer, or a clearly
+labeled safe failure/fallback. A rejected Writer remains a failure; the adapter never
+labels its fallback as accepted generation. There is no `reply`, `result`, `contract`,
+`analysis_id`, or diagnostic envelope in this response. The UI continues using analyze/SSE.
+`GET /api/modelmatch/config` reports `chat_contract: project1-chat-v1` and
+`contract_verified: true` for this confirmed shape only.
+
+`tool_calls` contains this turn's actual Lead and nested Researcher calls with `agent`,
+`call_id`, `context_id`, `tool`, projected `arguments`/`result`, status and execution timing.
+Unexecuted proposals are excluded. The whitelist omits free-form task text, rationales,
+prompts, hidden reasoning, credentials and raw provider bodies. Large collections are
+explicitly bounded; these records are privacy-preserving previews, not complete archives.
+Evidence-only replies and deterministic weight adjustments return no fabricated tools.
+
+### Conversation state and task scope
+
+Chat sessions are separate from analysis evidence sessions. Defaults: 30-minute inactivity
+TTL, at most 100 conversations per instance, last 10 visible messages, one active request
+per session. Message excerpts are bounded; confirmed current-task user requirements and
+validated plan values remain separate from the truncated history. The effective task is
+capped at 6,000 characters; overflow is rejected, never silently discarded.
+
+Clarification replies continue the pending task. Amendments retain unchanged confirmed
+requirements; changed targets must be anchored in the latest user message or clarification
+is requested before research. Assistant messages are background only, never user constraints.
+An explicit new task or complete fresh declaration starts a new task scope without prior
+constraints. Ambiguous changes of domain/purpose ask whether to start an independent task.
+The same visible conversation survives; old-task text is excluded from the new parse context.
+Scope routing is intentionally conservative, not an unrestricted natural-language intent model.
+
+Questions about saved recommendations/scores/evidence use the frozen analysis, not a fresh
+Gemini or AA request. Unsupported official specifications remain unknown. `Set alpha to 0.70`
+uses the existing deterministic Decision/Selector on frozen evidence; the original Writer
+narrative is marked stale and the adjusted report is explicitly deterministic. Other task
+changes may start a new bounded workflow. Expired/evicted evidence is reported unavailable;
+it is never silently refreshed. No closed workflow is resumed: each new analysis retains
+the same Lead within that run and fresh independent A/B/C contexts.
+
+Unknown chat IDs return 404; recently expired IDs return 410 while bounded expiry markers
+remain retained, then 404. Busy-session turns return 409, capacity/configuration failures
+503, disabled evaluation 403, exhausted research allowance 429, oversized task context 413,
+and malformed requests 422. Non-2xx errors use safe FastAPI-style `detail`, not a fake answer.
+Accepted turns with workflow/provider failures keep the three-field response and any actual
+partial tool calls. Cancellation releases locks/capacity and does not refund consumed allowance.
+
+### Server-side evaluation access
+
+The grader does not need an undocumented approval field. An operator must explicitly set:
+
+```text
+MODELMATCH_CHAT_EVALUATION_ENABLED=1
+MODELMATCH_CHAT_EVALUATION_MAX_RUNS=3
+```
+
+The default is disabled. The default research allowance is three workflow starts per
+process, shared across all sessions; valid configured limits are 1–100. Invalid values
+fail closed. Creating a session, toggling the evaluation flag, or a failed/cancelled run
+does not refill the counter. Each admitted workflow, including a model-based clarification,
+consumes one start before execution; existing 24-generation, timeout, zero-retry and
+concurrency limits remain in force. Read-only saved-evidence turns do not spend research
+allowance and may continue after it is exhausted; disabling evaluation blocks all chat turns.
+No request body can enable evaluation or override its allowance.
+
+These are per-process limits, not authentication, durable quotas or a global/dollar spending
+cap. Restart/new instances reset counters and lose sessions; IDs can fail on another worker.
+Configure evaluator access and instance policy separately before deployment. This change
+provisions no storage, IAM, secrets, quotas or public access. `/api/modelmatch/analyze`
+retains its existing `approve_live` requirement; `/run` and SSE/recalculate contracts are unchanged.
 
 ## Execution and Cloud Run preparation
 
@@ -236,4 +316,4 @@ Alternatives render the existing U-only/G-only and eligibility buckets, initiall
 bucket with expansion only to returned entries. Backend omissions remain disclosed; there
 is no hidden re-fetch. Current and original Raw Rankings keep server ordering and scores.
 `GET /recommendation-views.js` serves the local presentation component; existing application
-endpoints and SSE framing are unchanged. Official course `/chat` verification remains pending.
+endpoints and SSE framing are unchanged. The confirmed `/chat` shape is documented above; other course deliverables still require verification.

@@ -19,7 +19,8 @@ def main():
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
         port = sock.getsockname()[1]
-    env = {**os.environ, "MODELMATCH_OFFLINE": "1", "LITELLM_LOCAL_MODEL_COST_MAP": "True"}
+    env = {**os.environ, "MODELMATCH_OFFLINE": "1", "MODELMATCH_CHAT_EVALUATION_ENABLED": "1",
+           "LITELLM_LOCAL_MODEL_COST_MAP": "True"}
     report = {"mode": "offline_synthetic_http", "provider_calls": 0, "checks": []}
     started = time.monotonic()
     with (ROOT / ".cache/web-smoke-server.log").open("w") as log:
@@ -57,14 +58,14 @@ def main():
                     assert changed.json()["research_rerun"] is False
                 report["checks"].append("Weight override and task-default reset without research")
                 chat = client.post("/chat", json={"message": "Analyze financial documents for a finance team."})
-                assert chat.status_code == 200 and chat.json()["contract_verified"] is False
+                assert chat.status_code == 200 and set(chat.json()) == {"response", "session_id", "tool_calls"}
                 calls = chat.json()["tool_calls"]
                 assert len(calls) == 6 and all(c["status"] == "completed" for c in calls)
                 assert all(c["started_at"] is not None and c["elapsed_seconds"] is not None for c in calls)
                 assert {c["tool"] for c in calls} == {"research_a", "research_b", "research_c", "get_general_evidence", "get_domain_evidence", "get_operational_evidence"}
-                report["checks"].append("Provisional /chat with nested attributed tool parameters, results and timing")
+                report["checks"].append("Project 1 /chat with nested attributed tools and a real chat session")
                 clarification = client.post("/chat", json={"message": "help"}).json()
-                assert clarification["result"]["status"] == "clarification_needed"
+                assert "Please clarify" in clarification["response"]
                 report["checks"].append("Essential task clarification")
                 report.update(status="passed", sse_events=len(events), tool_calls=len(calls))
         except Exception as error:

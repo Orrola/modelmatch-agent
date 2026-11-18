@@ -14,6 +14,7 @@ os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
 import app as web
 from modelmatch_web import WebInput, AnalysisService
 from tools.decision import decide
+from tools.chat_sessions import ChatSessionStore
 
 
 TASK = "Analyze financial documents for a finance team."
@@ -21,13 +22,14 @@ TASK = "Analyze financial documents for a finance team."
 
 class WebApplicationTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
-        self.env = patch.dict(os.environ, {"MODELMATCH_OFFLINE": "1"})
+        self.env = patch.dict(os.environ, {"MODELMATCH_OFFLINE": "1", "MODELMATCH_CHAT_EVALUATION_ENABLED": "1"})
         self.env.start()
         self.addCleanup(self.env.stop)
         self.service = web.app.state.modelmatch
         self.service.saved.clear()
         self.service.recent.clear()
         self.service.active = 0
+        self.service.chat_sessions = ChatSessionStore()
         self.client = httpx.AsyncClient(transport=httpx.ASGITransport(app=web.app), base_url="http://offline-test")
 
     async def asyncTearDown(self):
@@ -46,7 +48,7 @@ class WebApplicationTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual((await self.client.get(path)).status_code, 200)
         config = (await self.client.get("/api/modelmatch/config")).json()
         self.assertEqual(config["mode"], "offline_synthetic")
-        self.assertFalse(config["contract_verified"])
+        self.assertTrue(config["contract_verified"])
         self.assertFalse(config["grounding_enabled"])
         self.assertFalse((await self.client.get("/healthz")).json()["provider_checked"])
 
@@ -164,8 +166,7 @@ class WebApplicationTests(unittest.IsolatedAsyncioTestCase):
         response = await self.client.post("/chat", json={"message": TASK})
         self.assertEqual(response.status_code, 200)
         result = response.json()
-        self.assertFalse(result["contract_verified"])
-        self.assertEqual(result["contract"], "provisional-modelmatch-chat-v1")
+        self.assertEqual(set(result), {"response", "session_id", "tool_calls"})
         calls = result["tool_calls"]
         self.assertEqual(len(calls), 6)
         self.assertEqual(len({c["call_id"] for c in calls}), 6)
@@ -189,8 +190,9 @@ class WebApplicationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_live_calls_require_explicit_approval_before_service_execution(self):
         with patch.dict(os.environ, {"MODELMATCH_OFFLINE": "0"}), patch.object(self.service, "run", new_callable=AsyncMock) as run:
-            for path, body in (("/api/modelmatch/analyze", {"question": TASK}), ("/chat", {"message": TASK})):
-                self.assertEqual((await self.client.post(path, json=body)).status_code, 403)
+            self.assertEqual((await self.client.post("/api/modelmatch/analyze", json={"question": TASK})).status_code, 403)
+            with patch.dict(os.environ, {"MODELMATCH_CHAT_EVALUATION_ENABLED": "0"}):
+                self.assertEqual((await self.client.post("/chat", json={"message": TASK})).status_code, 403)
             run.assert_not_awaited()
 
     async def test_origin_and_body_limits_are_enforced(self):
@@ -216,8 +218,8 @@ class WebApplicationTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(OfflineModel, "get_response", failing):
             response = await self.client.post("/chat", json={"message": TASK})
         body = response.json()
-        self.assertEqual(body["result"]["status"], "insufficient_evidence")
-        self.assertNotIn("decision", body["result"])
+        self.assertIn("No reliable recommendation", body["response"])
+        self.assertEqual(set(body), {"response", "session_id", "tool_calls"})
         call = next(c for c in body["tool_calls"] if c["tool"] == "research_c")
         self.assertEqual(call["status"], "failed")
         self.assertNotIn("SIMULATED_SECRET", response.text)

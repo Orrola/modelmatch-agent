@@ -10,6 +10,7 @@ from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
 os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
 import app as web
+from tools.chat_sessions import ChatSessionStore
 
 PUBLIC_HOST = "modelmatch-agent-git-978311583991.europe-west1.run.app"
 PUBLIC_ORIGIN = f"https://{PUBLIC_HOST}"
@@ -17,13 +18,15 @@ PUBLIC_ORIGIN = f"https://{PUBLIC_HOST}"
 
 class RequestOriginTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
-        self.env = patch.dict(os.environ, {"MODELMATCH_OFFLINE": "0", "MODELMATCH_PUBLIC_ORIGIN": PUBLIC_ORIGIN})
+        self.env = patch.dict(os.environ, {"MODELMATCH_OFFLINE": "0", "MODELMATCH_PUBLIC_ORIGIN": PUBLIC_ORIGIN,
+                                         "MODELMATCH_CHAT_EVALUATION_ENABLED": "1"})
         self.env.start()
         self.addCleanup(self.env.stop)
         self.service = web.app.state.modelmatch
         self.service.saved.clear()
         self.service.recent.clear()
         self.service.active = 0
+        self.service.chat_sessions = ChatSessionStore()
         result = {"status": "clarification_needed", "questions": ["Specify the task."], "markdown": "Specify the task."}
         self.run = AsyncMock(return_value=(result, None))
         self.stub = patch.object(self.service, "run", self.run)
@@ -37,7 +40,7 @@ class RequestOriginTests(unittest.IsolatedAsyncioTestCase):
         await self.client.aclose()
 
     async def post(self, path="/chat", headers=None):
-        body = {"message" if path == "/chat" else "question": "Analyze financial research.", "approve_live": True}
+        body = {"message": "Analyze financial research."} if path == "/chat" else {"question": "Analyze financial research.", "approve_live": True}
         return await self.client.post(path, json=body, headers=headers or {})
 
     async def test_tls_ingress_mismatch_is_reproduced_without_public_origin(self):
@@ -58,7 +61,7 @@ class RequestOriginTests(unittest.IsolatedAsyncioTestCase):
     async def test_exact_public_origin_accepts_normal_post(self):
         response = await self.post(headers={"Origin": PUBLIC_ORIGIN})
         self.assertEqual(response.status_code, 200)
-        self.assertFalse(response.json()["contract_verified"])
+        self.assertEqual(set(response.json()), {"response", "session_id", "tool_calls"})
         self.run.assert_awaited_once()
 
     async def test_exact_public_origin_passes_recalculation_origin_gate(self):
@@ -97,7 +100,7 @@ class RequestOriginTests(unittest.IsolatedAsyncioTestCase):
         for origin in ("http://127.0.0.1:8000", "http://localhost:8000", "https://localhost:8000"):
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=web.app), base_url=origin) as client:
                 response = await client.post("/chat", headers={"Origin": origin},
-                    json={"message": "Analyze financial research.", "approve_live": True})
+                    json={"message": "Analyze financial research."})
             self.assertEqual(response.status_code, 200)
         self.assertEqual(self.run.await_count, 3)
 
@@ -125,9 +128,10 @@ class RequestOriginTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.post()).status_code, 200)
         self.run.assert_awaited_once()
 
-    async def test_origin_fix_does_not_bypass_live_approval(self):
-        response = await self.client.post("/chat", headers={"Origin": PUBLIC_ORIGIN},
-            json={"message": "Analyze financial research."})
+    async def test_origin_fix_does_not_bypass_server_evaluation_gate(self):
+        with patch.dict(os.environ, {"MODELMATCH_CHAT_EVALUATION_ENABLED": "0"}):
+            response = await self.client.post("/chat", headers={"Origin": PUBLIC_ORIGIN},
+                json={"message": "Analyze financial research."})
         self.assertEqual(response.status_code, 403)
         self.run.assert_not_awaited()
 

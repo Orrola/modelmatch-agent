@@ -1,161 +1,275 @@
 # ModelMatch AI
 
-An evidence-grounded LLM selection workspace for product managers, engineers, and technical decision-makers. Describe a task, compare models against the available Artificial Analysis (AA) evidence, and inspect the tradeoffs behind a conditional shortlist.
+### An Evidence-Grounded Multi-Agent System for LLM Selection
 
-The web application has Overview, Comparison, Evidence, and model-detail views. Live Mode uses Vertex AI with Application Default Credentials (ADC). Synthetic data is available only for explicitly selected offline tests; provider failures never switch to fictional models.
+ModelMatch AI is an AI-powered model selection workspace that helps product managers, engineers, and technical decision-makers identify suitable large language models for real-world applications.
 
-## Quick start
+Instead of relying solely on general recommendations, ModelMatch AI combines model intelligence, task-specific capabilities, API pricing, and operational performance to support transparent, evidence-based decisions.
 
-Requirements: Python 3.10+, [uv](https://docs.astral.sh/uv/), an existing Google Cloud project with appropriate Vertex access, ADC, and an AA API key. Installation downloads dependencies; running the offline tests does not require provider credentials.
 
-```sh
-uv sync --locked
-```
+---
 
-Copy `.env.example` to `.env` only if a local `.env` does not already exist. Set `AA_API_KEY` and the existing project/location as needed. Never commit credentials. ADC can be configured with `gcloud auth application-default login`; no separate Gemini API key is required when Vertex ADC works. This application does not create projects, enable cloud services, or change IAM.
 
-Start the real local web application:
+## 1. Overview
 
-```sh
-MODELMATCH_OFFLINE=0 .venv/bin/uvicorn app:app --host 127.0.0.1 --port 8000 --workers 1
-```
+### The Problem
 
-Open **http://127.0.0.1:8000/** or **http://127.0.0.1:8000/modelmatch**. Enter a task and click **Run analysis** to initiate live requests. Startup, page loading, and health/config checks do not call Gemini or AA. The configured defaults are `gemini-3.5-flash` for Lead/Writer and `gemini-3.5-flash-lite` for researchers, with `global` as the location fallback. Credentials and actual model access are checked by the provider when a request is made, not by the health endpoint.
+Choosing an LLM for a production application involves more than identifying the highest-performing model.
 
-Example task: `Analyze financial documents for a finance team.` Optional form fields support monthly budget, workload, mean TTFT, mean output speed, and combined context. Blank fields remain unspecified. Monthly cost needs request volume and both average input/output token counts, plus both token prices. Unsupported official specifications stay unknown. Hard requirements are evaluated separately from soft preferences.
+Different use cases require different capabilities, and practical decisions must account for several competing factors:
 
-## Architecture
+- **Model Quality:** How capable is the model overall?
+- **Task Relevance:** How well does its measured performance align with the intended application?
+- **Cost Efficiency:** What would the model cost under the expected workload?
+- **Operational Performance:** Does its observed latency and output speed fit the application's needs?
+- **Evidence Reliability:** Which claims are supported by available data, and which remain unverified?
 
-```text
-User requirements
-  -> Lead parses requirements and classifies the task
-  -> parallel Researcher A / B / C, each with a fresh Runner.run context
-  -> the same Lead reviews evidence and may request one targeted follow-up round
-  -> deterministic Decision Tool
-  -> Writer selects evidence-grounded report content
-  -> SSE results, model comparison, and inspectable evidence
-```
+General-purpose LLMs can suggest models, but their recommendations may rely on previously learned information rather than newly retrieved, model-specific evidence.
 
-The OpenAI Agents SDK Agent-as-a-Tool pattern is retained: Lead tools launch independent researcher runs. SDK hooks record attributed tool calls and execution intervals. Python owns workflow stages, stage-specific schemas and tool visibility. Parsing/reviewing stages cannot invoke researcher tools. The original instructor starter supplied useful orchestration conventions; its Wikipedia product, data access, prompts, browser assets and unauthenticated context-dump endpoints have been removed.
+### Our Solution
 
-- **A — General Intelligence:** retrieves original numeric General Intelligence G and retains missing records separately.
-- **B — Use-case Fit:** selects a relevant AA Capability Index U with strong/partial/none relevance and an explanation. Supported domains are finance, strategy/operations, legal, healthcare, engineering, and economics. Unsupported tasks never receive an invented U.
-- **C — Operational Fit:** inspects pricing, workload-based cost, performance_v3 means and supplied constraints. Context/deployment/residency remain unknown without verified official evidence.
-- **Lead Evidence Review:** checks missing data, IDs, versions, relevance and constraints; bounded follow-up does not invent values absent from a fixed snapshot.
-- **Decision:** joins evidence by exact AA model ID, preserving snapshot and evidence provenance.
-- **Writer:** cannot change canonical ranked model IDs or evidence IDs. The deterministic renderer owns numbers and ordering.
+ModelMatch AI transforms a natural-language product requirement into a structured model selection analysis.
 
-## Decision policy
+The application provides:
 
-```text
-S = alpha * G + (1 - alpha) * U + O
-```
+| **Feature**                     | **What It Provides**                                                                   |
+| ------------------------------- | -------------------------------------------------------------------------------------- |
+| **Best Overall**                | Highest-scoring qualified model under the available evidence                           |
+| **Lower-cost Alternative**      | A cheaper comparable option from a verified different model family, when available     |
+| **Different Family**            | An alternative from a distinct verified model family                                   |
+| **Model Score Breakdown**       | General Intelligence, Use-case Capability, Operational Adjustment, and Composite Score |
+| **Cost & Performance Analysis** | Estimated monthly token cost, mean latency, and output speed                           |
+| **Interactive Comparison**      | Adjustable weights and model-level comparisons                                         |
+| **Evidence Transparency**       | Data sources, model identifiers, missing metrics, and qualification status             |
 
-G and U are original AA index points. They are not accuracy percentages. S is a custom product decision score, not an official AA benchmark. Task defaults are provisional policy rather than empirically validated optimal weights:
+Recommendations are conditional on the available evidence. If a model's capabilities or required specifications cannot be verified, the system explicitly identifies the limitation instead of manufacturing a complete ranking.
 
-| Task type | General weight alpha |
-|---|---:|
-| general_assistant | 0.70 |
-| tool_agent | 0.50 |
-| reasoning_analysis | 0.50 |
-| coding_assistant | 0.40 |
-| specialized_domain | 0.30 |
-| mixed_or_unknown | 0.60 |
+### Target Users
 
-Modes are `task_default`, `user_override`, and `fallback_default`. The user override takes precedence. The slider recalculates with the same evidence, without fetching data or calling Gemini. Reset passes `null` to restore the task default. The original Writer report remains unchanged and is marked stale when it corresponds to different weights. Sensitivity results include alpha=0.50, 0.60, 0.70, and the selected value.
+**AI Product Managers** can compare quality, cost, and operational tradeoffs before selecting models for a product.
 
-Operational adjustments are deterministic, capped linear penalties, with -15 <= O <= 0:
+**AI Engineers** can evaluate API pricing, performance, and technical constraints before prototyping or deployment.
 
-```text
-cost_penalty = -8 * min(1, max(0, (estimated_cost - budget) / budget))
-ttft_penalty = -5 * min(1, max(0, (mean_ttft - target) / target))
-speed_penalty = -2 * min(1, max(0, (target - mean_speed) / target))
-```
+**Technical Decision-Makers** can review model recommendations together with their supporting evidence and limitations.
 
-These apply only when the corresponding soft target and compatible evidence exist. For a zero upper target, zero actual passes and any positive actual receives the capped deduction; a zero speed minimum passes available nonnegative measurements. Missing evidence is not zero or an automatic zero penalty. Hard constraints are enforced separately: known violations are ineligible; unresolved hard requirements are unverified. Performance comparisons exclusively use performance_v3 **mean** statistics, never legacy medians or P95 claims.
 
-Fully evaluable, provisional, unverified, and ineligible candidates remain separate. A needs valid G; B needs only the selected U and documented relevance; C needs operational evidence sufficient for supplied requirements. There is no all-six-index intersection pool. Counts before shortlist limits are returned. `shortlist_size=6` in the web flow is per category, not a six-model AA snapshot restriction. Prompts use bounded evidence previews rather than the complete raw catalog.
+---
 
-## Data and official specifications
 
-The async AA Free client handles pagination, timeouts, bounded rate-limit retries and caching. Real snapshots retain source URL, retrieval time, original IDs and index versions. The cache is an optimization, not required persistent storage; valid live cache entries can be reused without pretending they are freshly retrieved. API errors never silently use test fixtures. Historical coding/agentic fields and unavailable Capability Indices are not synthesized.
+## 2. How It Works
 
-Official-specification infrastructure is retained in `tools/official_specs.py`. It uses a separate Search-only Vertex request and conservative checks of official domains, exact versions, literal excerpts, dates and citations. Its grounding diagnostics retain stopping information and usage where available. Search-generated claims are not verified facts. **Grounding is disabled in the normal web flow.** Previous live discovery returned insufficient citation metadata; official context/input/output/deployment values remain unknown unless independently accepted by the existing verifier. No candidate-model benchmarking is performed.
+ModelMatch AI follows a **Deep Research multi-agent architecture**, separating evidence collection, evaluation, and final recommendation.
 
-Data attribution and methodology: [Artificial Analysis](https://artificialanalysis.ai/), [API documentation](https://artificialanalysis.ai/data-api/docs), [Capability Index methodology](https://artificialanalysis.ai/methodology/capability-indices). Verify data redistribution rights before publishing snapshots. Local API payloads and audit artifacts are not included in this repository.
+### Research Agents
 
-## API and traces
+| **Agent**                               | **Responsibility**                                                                                                               |
+| --------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| **Lead Agent**                          | Interprets user requirements, coordinates researchers, checks evidence, and requests bounded follow-up research when appropriate |
+| **Researcher A — General Intelligence** | Retrieves general model capability measurements from Artificial Analysis                                                         |
+| **Researcher B — Use-case Capability**  | Identifies task-relevant evaluation indices and assesses their relevance                                                         |
+| **Researcher C — Operational Fit**      | Examines API pricing, response performance, workload assumptions, and operational constraints                                    |
+| **Writer**                              | Produces a validated selection of recommendation and evidence references for the final report                                    |
 
-Full English request/response descriptions are in [WEB_API.md](WEB_API.md).
+Researchers execute in parallel with independent contexts. Their evidence is combined by the Lead and passed to deterministic decision tools.
 
-| Endpoint | Purpose |
-|---|---|
-| `GET /`, `GET /modelmatch` | ModelMatch web application |
-| `GET /healthz` | Process health; no provider calls |
-| `GET /api/modelmatch/config` | Execution mode and capability flags |
-| `POST /api/modelmatch/analyze` | Validated requirements and SSE research |
-| `POST /api/modelmatch/recalculate` | Reuse original evidence at a new alpha |
-| `POST /chat` | Clearly provisional chat adapter with attributed nested traces |
-| `GET /run?mode=modelmatch&question=...` | ModelMatch compatibility SSE, including `done.markdown` and `done.result` |
+The final report is assembled from validated selections and structured evidence, so the Writer cannot arbitrarily change model scores or rankings.
 
-The compatibility `/run` defaults to ModelMatch, uses the same service/limits, and starts research only when explicitly requested. Wikipedia mode is no longer supported. The primary UI uses POST analyze. Existing ModelMatch GET start/run_id and done/markdown/result fields are retained. Old `/context` and `/context-panel.js` routes are removed; the new UI already exposes bounded technical traces without publishing full agent contexts or prompts.
+### Decision Methodology
 
-SSE includes start, activity/context notifications, stage, interpretation, tool_trace, done/error, and heartbeat comments. Receiving HTTP 200 or a `done` event is not proof of successful research: inspect the result status, evidence, and Writer flag. Tool traces retain call IDs, agent/context attribution, parameters, results, statuses and timings; explicitly truncated previews are not lossless audit archives. Client disconnect cancels the worker; an already-issued provider request may still incur usage.
+ModelMatch uses an interpretable composite score:
 
-## Known limitations and live validation status
+[\
+S = \alpha G + (1-\alpha)U + O\
+]
 
-**A live Writer failure has been reported and remains unresolved.** This cleanup neither reproduces it with paid calls nor silently fixes/bypasses it. A rejected/unavailable Writer produces `writer_rejected` and `writer_fallback=true`; the frontend identifies the deterministic fallback. That fallback does not count as successful live Writer verification, even if its numeric report is safely rendered from canonical evidence. Do not label HTTP success or fallback output as complete live success. Older bounded pipeline success is not proof that the reported failure is resolved.
+Where:
 
-Other limitations: official Grounding citation reliability, exact-version verification gaps, task classification ambiguity, and single-process session state. The current `/chat` is **not yet verified against authoritative course instructions**. A local previous Project 1 implementation uses `message/session_id` and `response/session_id/tool_calls`; the current adapter uses a different documented provisional envelope. See [SUBMISSION.md](SUBMISSION.md) for missing deliverables and verification boundaries.
+- **G — General Intelligence:** Overall capability score from Artificial Analysis.
+- **U — Use-case Capability:** Task-relevant capability score from Artificial Analysis, where available.
+- **O — Operational Adjustment:** Deterministic adjustment based on supported cost and performance preferences.
+- **α — General Capability Weight:** Controls the relative influence of general versus task-specific capability.
 
-## Offline verification
+G and U retain their original index-point scales. The composite score is a **custom selection metric**, not an official Artificial Analysis benchmark or a prediction of real-world accuracy.
 
-```sh
-uv lock --check --offline
-uv sync --locked --offline
-.venv/bin/python -m unittest discover -s tests -q
-.venv/bin/python -m scripts.submission_audit
-MODELMATCH_OFFLINE=1 .venv/bin/python -m scripts.web_smoke
-```
+Users can adjust the weighting to explore how recommendations change without repeating the underlying research.
 
-The offline uv commands require an already populated dependency cache. On a fresh machine, use `uv sync --locked` first. Synthetic fixtures are explicitly labeled and never represent real evaluations. Unit tests mock provider calls. `web_smoke` starts a temporary loopback HTTP server in explicit synthetic mode and tests assets, SSE, clarification, traces and weight changes. It is a test, not the normal application startup command or live acceptance.
+Missing benchmark values are not replaced with fabricated scores or dataset averages.
 
-Optional browser review: `MODELMATCH_OFFLINE=1 .venv/bin/python -m scripts.ui_smoke` requires local Chrome and the installed `websockets` library. It uses an isolated temporary profile. JavaScriptCore tests run when that interpreter is available and otherwise report a skip. No browser test installs software or calls a paid model automatically.
 
-## Repository map
+---
 
-```text
-app.py                       FastAPI entry point, root page, compatibility SSE
-modelmatch_web.py            HTTP contracts, web hooks, bounded evidence sessions
-modelmatch_agents.py         Lead, researcher tools, Writer definitions
-modelmatch_schemas.py        Stage outputs, contexts, execution limits
-orchestration.py             Parallel runs, same-Lead review, Decision/Writer validation
-context_panel.py             Reusable SDK context recording and hooks; no HTTP routes
-vertex_runtime.py            ADC configuration, request budgets, sanitized diagnostics
-recommendation.py            Writer validation and deterministic report rendering
-tools/                      AA access, evidence preparation, decision, official specs
-static/                     English HTML/CSS/JS application
-tests/                      Offline regression and sanitized/synthetic fixtures
-examples/                   Explicit synthetic demonstration data
-offline_model.py             Explicit test-mode scripted SDK model
-scripts/                    Audits and opt-in operational verification
-Dockerfile                  Container startup for a subsequent deployment
-WEB_API.md / SUBMISSION.md    Public contracts, limitations and submission checklist
-```
 
-## Deployment preparation
+## 3. Example Queries & Model Comparisons
 
-No deployment is performed by startup, tests, or cleanup. The container uses Python 3.13, the lockfile, a non-root runtime user and one worker:
+The following cases illustrate how ModelMatch AI approaches practical model selection problems.
 
-See [deployment readiness and operating limits](DEPLOYMENT.md) before exposing the service. Container build/runtime and cloud permissions require separate verification; the local machine used for readiness checks has no Docker executable.
+The Gemini baseline summaries are condensed from responses provided by the project author. They describe what Gemini recommended, but the underlying specifications and benchmark claims were not independently verified in those baseline responses.
 
-```sh
-docker build -t modelmatch-ai .
-docker run --rm -p 8080:8080 --env-file .env modelmatch-ai
-```
+ModelMatch results are identified as either **recorded evaluation results** or **expected system behavior** where a complete historical response was not preserved.
 
-Supply ADC through the runtime identity or an explicit development credential mount; the commands do not bundle local ADC into the image. On Cloud Run use a properly authorized service account and server-side AA secret injection. Never commit or upload `.env`, caches, internal `docs/`, browser artifacts, private keys or service-account JSON. The deployment ignore files limit uploaded/build source files. Preserve local development material outside the submission set.
+### Case 1 — Financial Research Assistant
 
-Startup binds `0.0.0.0:$PORT` (`PORT=8080` in the container); `python app.py` defaults to port 8000. `/healthz` does not attest to provider readiness. The web workflow retains 24 shared model requests, 2048 configured output tokens per request, 30-second provider timeout, 180-second workflow and 190-second outer timeout, at most six researcher runs and one follow-up round. No model retries or full-run retries are automatic. AA retains its separate bounded pagination/retry policy. Usage does not establish an exact dollar cost or total thinking-token ceiling.
+**User Prompt**
 
-The MVP allows two concurrent analyses and six starts/minute per process. Evidence sessions are ephemeral: 30-minute TTL, eight sessions, approximately 64 MiB serialized storage, with a 32 MiB single-entry cutoff. Missing/expired sessions return explicit errors. These limits are not distributed and are not a precise Python heap bound. Multiple instances/workers need shared, tenant-scoped evidence storage for reliable recalculation. Public deployment also needs authentication, trace access controls, distributed budgets, container validation, and runtime permissions/timeouts. GitHub source readiness, deployment readiness and complete live validation are separate milestones.
+> I am building an AI-powered financial research assistant that analyzes financial reports, summarizes market trends, and generates investment research insights. I need a model with strong reasoning abilities and reliable financial domain knowledge. Recommend the top three LLMs.
+
+|                       | **Gemini Baseline**                                                                                  | **ModelMatch AI**                                                                                   |
+| ------------------------- | ---------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| **Best Overall**          | Claude Opus 5.5                                                                                      | **Claude Fable 5.2 (Max, Default Fallback)**                                                        |
+| **Alternatives**          | Gemini 4 Carbon, Claude Fable 5.2, and other models for specific use cases                           | Lower-cost and Different Family slots unavailable without verified family evidence                  |
+| **Selection Basis**       | Financial reasoning, long-document capabilities, published benchmark claims, and cost considerations | Retrieved General Intelligence and Finance Capability indices, combined using a deterministic score |
+| **Quantitative Evidence** | Cites benchmark rankings and pricing claims without live tool verification                           | G = 64.6; U = 64.7; O = 0; **S = 64.67**                                                            |
+| **Evidence Limitations**  | Current accuracy of specifications is not established by the baseline                                | Explicitly reports missing family evidence and unverified production specifications                 |
+
+**What ModelMatch Adds**
+
+Rather than selecting a model through general reasoning alone, ModelMatch produces a reproducible comparison using retrieved, task-relevant benchmark data.
+
+Its Financial analysis selected Claude Fable 5.2 as the highest-scoring candidate under the recorded snapshot and weighting. It did not invent alternative recommendations when the required family evidence was unavailable.
+
+**Expected Answer:** Identify the highest-scoring qualified Financial candidate based on available General Intelligence and Finance Capability evidence, with transparent scoring and limitations.
+
+**Evidence Source:** Artificial Analysis Free API, `GET /api/v2/language/models/free`; fields `evaluations.artificial_analysis_intelligence_index` and `evaluations.artificial_analysis_finance_and_accounting_index`.
+
+
+---
+
+
+### Case 2 — E-commerce Shopping Assistant
+
+**User Prompt**
+
+> I am building an AI shopping assistant for an online retail platform. The assistant will answer product questions, compare specifications, and generate personalized shopping recommendations. I expect 100,000 requests per month, with an average of 2,000 input tokens and 500 output tokens per request. I prefer a model with a mean time to first token below 2 seconds and an estimated monthly API cost below $300. Recommend the top three LLMs, prioritizing instruction following, cost efficiency, and response speed. Clearly distinguish verified specifications from estimates.
+
+|                      | **Gemini Baseline**                                                          | **ModelMatch AI — Expected Behavior**                                                   |
+| ------------------------ | ---------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| **Best Overall**         | Claude Haiku 5.5                                                             | Selects a qualified model only if sufficient task and operational evidence is available |
+| **Alternatives**         | GPT-6 Luna and Gemini models                                                 | Evaluates cheaper and different-family alternatives using comparable evidence           |
+| **Cost Analysis**        | Estimates $45/month for its preferred models using stated token prices       | Calculates monthly API cost from retrieved pricing and the specified workload           |
+| **Latency Analysis**     | Claims sub-second TTFT for preferred models                                  | Compares retrieved mean TTFT with the 2-second preference                               |
+| **Evidence Limitations** | Pricing and latency assumptions were not independently checked through tools | Separates measured data, estimates, unsupported task mappings, and missing metrics      |
+
+**What ModelMatch Adds**
+
+ModelMatch turns an operationally constrained product question into a quantitative model comparison.
+
+For the specified workload, it can calculate:
+
+- **Monthly input volume:** 200 million tokens
+- **Monthly output volume:** 50 million tokens
+- **Estimated cost:** 200 × input price per million + 50 × output price per million
+- **Performance preference:** Mean TTFT below 2 seconds
+- **Budget preference:** Estimated monthly cost below $300
+
+The system evaluates the tradeoff between task suitability, cost, and latency rather than relying exclusively on general model reputation.
+
+**Expected Answer:** Recommend candidates using available task-relevant evidence and workload-specific operational estimates, or explain why a reliable ranking is not supported.
+
+**Evidence Source:** Artificial Analysis Free API, `GET /api/v2/language/models/free`; fields `pricing.price_1m_input_tokens`, `pricing.price_1m_output_tokens`, and `performance_v3` mean latency/speed metrics.
+
+
+---
+
+
+### Case 3 — Legal Document Analysis
+
+**User Prompt**
+
+> I am building an AI assistant for a legal research team. It needs to review long contracts, identify important clauses, compare multiple documents, and produce accurate summaries with references to the original text. The system must support input documents of at least 100,000 tokens. Recommend the top three LLMs that meet this requirement, and clearly identify any specifications that cannot be verified.
+
+|                      | **Gemini Baseline**                                                     | **ModelMatch AI — Expected Behavior**                                                     |
+| ------------------------ | ----------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| **Best Overall**         | Gemini 4 Carbon                                                         | No deployment-qualified recommendation without verified mandatory input-capacity evidence |
+| **Alternatives**         | Claude Opus 5.5 and GPT-6.1 Sol                                         | Alternatives remain conditional on evidence and eligibility                               |
+| **Selection Basis**      | Legal reasoning benchmarks, reported context limits, and pricing        | General Intelligence, Legal Capability, and explicit hard-constraint checks               |
+| **Context Requirement**  | Claims all three models satisfy the 100K-token requirement              | Does not assume that a reported combined context window proves maximum input capacity     |
+| **Evidence Limitations** | Detailed provider specifications are asserted without live verification | Marks unsupported input-capacity requirements as **Unverified**, not satisfied            |
+
+**What ModelMatch Adds**
+
+This example highlights the importance of knowing when available data is insufficient.
+
+For legal applications, a model can demonstrate strong benchmark performance while still lacking verified evidence for a mandatory technical requirement.
+
+ModelMatch separates **model quality** from **deployment eligibility** and does not certify that a model satisfies a 100,000-token input requirement merely because its reported context window is large.
+
+**Expected Answer:** Identify legal capability evidence where available, but refrain from certifying deployment-ready recommendations until the mandatory input-capacity specification has been verified.
+
+**Evidence Source:** Artificial Analysis Free API, `GET /api/v2/language/models/free`; fields `evaluations.artificial_analysis_intelligence_index` and `evaluations.artificial_analysis_legal_index`. Verified input-capacity evidence would require appropriate official provider specifications.
+
+**Evaluation Status:** The limitation-handling policy is supported by existing offline evidence. A complete matching historical live response has not been recovered.
+
+
+---
+
+
+## 4. Data Sources & Methodology
+
+### Artificial Analysis
+
+ModelMatch AI uses the [Artificial Analysis](https://artificialanalysis.ai/) Free API as its primary model evaluation source.
+
+**Data access:** `GET https://artificialanalysis.ai/api/v2/language/models/free`
+
+The backend retrieves paginated model records using a server-side API credential, preserves retrieval metadata, and associates evaluation fields with exact model IDs. No proprietary snapshot is required in the public repository to understand the data-loading process.
+
+| **Data Category**          | **Purpose**                        |
+| -------------------------- | ---------------------------------- |
+| General Intelligence Index | Overall model capability evidence  |
+| Capability Indices         | Task-relevant model performance    |
+| Input/Output Pricing       | API cost estimation                |
+| Mean TTFT                  | Response initiation performance    |
+| Mean Output Speed          | Generation throughput              |
+| Model Identity & Version   | Evidence matching and traceability |
+
+See the [Artificial Analysis API Documentation](https://artificialanalysis.ai/data-api/docs) and [Capability Index Methodology](https://artificialanalysis.ai/methodology/capability-indices).
+
+### Evidence-Grounded Decisions
+
+ModelMatch distinguishes between:
+
+- **Fully evaluable:** Sufficient evidence exists to compute the composite score.
+- **Provisional:** Some evidence supports further consideration, but the full ranking is not established.
+- **Unverified:** A mandatory requirement cannot be confirmed using available evidence.
+- **Ineligible:** A known hard requirement is violated.
+
+This separation prevents incomplete benchmark coverage from being silently treated as proof of model suitability.
+
+
+---
+
+
+## 5. Live Demo & Usage
+
+**Application:** [Launch ModelMatch AI](https://modelmatch-agent-git-978311583991.europe-west1.run.app/)
+
+### How to Use
+
+1. Describe the application you are building and the task the LLM should perform.
+2. Optionally specify your expected workload, monthly budget, latency preferences, or technical requirements.
+3. Run the analysis to view the research process and model comparison.
+4. Explore recommended candidates, score breakdowns, and supporting evidence.
+5. Adjust the General Intelligence weight to examine how model selection changes.
+
+The interface includes Overview, Comparison, Evidence, and model-detail views.
+
+### API Compatibility
+
+ModelMatch provides a Project 1-compatible `/chat` endpoint.
+
+
+---
+
+
+## 6. Limitations
+
+ModelMatch AI is a decision-support system, not an independent LLM benchmarking service.
+
+- **Incomplete Benchmark Coverage:** Not every model has available General Intelligence and task-specific Capability scores.
+- **Snapshot Dependence:** Model rankings and prices may change as source data is updated.
+- **Family Identification:** Some model families cannot be confirmed for a given data snapshot, limiting alternative recommendations.
+- **Operational Uncertainty:** Average latency does not guarantee tail latency or production service levels.
+- **Unverified Specifications:** Context capacity, deployment availability, and residency requirements may require independent official verification.
+- **Custom Decision Policy:** Composite scores and weighting choices represent a transparent selection heuristic, not a validated measure of real-world performance.
+
+The system prioritizes traceability and explicit uncertainty over unsupported recommendations. Final model choices should be validated with application-specific benchmarks and production testing.

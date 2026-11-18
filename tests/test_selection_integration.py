@@ -209,7 +209,9 @@ class SelectionHttpTests(unittest.IsolatedAsyncioTestCase):
         self.service.saved.clear()
         self.service.recent.clear()
         self.service.active = 0
-        mode = patch.dict(os.environ, {"MODELMATCH_OFFLINE": "1"})
+        from tools.chat_sessions import ChatSessionStore
+        self.service.chat_sessions = ChatSessionStore()
+        mode = patch.dict(os.environ, {"MODELMATCH_OFFLINE": "1", "MODELMATCH_CHAT_EVALUATION_ENABLED": "1"})
         mode.start()
         self.addCleanup(mode.stop)
         self.client = httpx.AsyncClient(transport=httpx.ASGITransport(app=self.app), base_url="http://offline-test")
@@ -280,11 +282,11 @@ class SelectionHttpTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("tool_calls", result)
         self.assertTrue(all(c["candidate_status"] == "unverified" for c in result["decision"]["candidates"].values()))
 
-    async def test_chat_and_run_add_selection_without_changing_existing_envelopes(self):
+    async def test_project1_chat_renders_selection_and_run_keeps_full_result(self):
         chat = (await self.client.post("/chat", json={"message": USER_INPUT})).json()
-        self.assertFalse(chat["contract_verified"])
-        self.assertIn("tool_calls", chat)
-        self.assertIn("selection", chat["result"])
+        self.assertEqual(set(chat), {"response", "session_id", "tool_calls"})
+        self.assertIn("Canonical selection", chat["response"])
+        self.assertTrue(chat["tool_calls"])
         response = await self.client.get("/run", params={"question": USER_INPUT})
         events = [json.loads(s[6:]) for s in response.text.splitlines() if s.startswith("data: ")]
         self.assertEqual(events[-1]["type"], "done")

@@ -127,7 +127,9 @@ class RecommendationUiHttpTests(unittest.IsolatedAsyncioTestCase):
         import app
         service = app.app.state.modelmatch
         service.saved.clear(); service.recent.clear(); service.active = 0
-        with patch.dict(os.environ, {"MODELMATCH_OFFLINE": "1"}):
+        from tools.chat_sessions import ChatSessionStore
+        service.chat_sessions = ChatSessionStore()
+        with patch.dict(os.environ, {"MODELMATCH_OFFLINE": "1", "MODELMATCH_CHAT_EVALUATION_ENABLED": "1"}):
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app.app), base_url="http://offline-test") as client:
                 asset = await client.get("/recommendation-views.js")
                 self.assertEqual(asset.status_code, 200)
@@ -142,8 +144,8 @@ class RecommendationUiHttpTests(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(current["writer_explanation_stale"])
                 self.assertFalse(current["research_rerun"])
                 chat = (await client.post("/chat", json={"message": "Analyze financial documents for a finance team."})).json()
-                self.assertFalse(chat["contract_verified"])
-                self.assertIn("model_identity", chat["result"])
+                self.assertEqual(set(chat), {"response", "session_id", "tool_calls"})
+                self.assertIn("Canonical selection", chat["response"])
                 self.assertTrue(chat["tool_calls"])
                 compatibility = await client.get("/run", params={"question": "Analyze financial documents for a finance team."})
                 frames = [json.loads(line[6:]) for line in compatibility.text.splitlines() if line.startswith("data: ")]

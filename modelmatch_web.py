@@ -6,6 +6,7 @@ import asyncio
 import json
 import math
 import os
+import re
 import secrets
 import time
 import uuid
@@ -17,18 +18,22 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import FileResponse, StreamingResponse
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator, model_validator
 
 from context_panel import AgentContexts, PanelHooks, _plain
-from modelmatch_schemas import OrchestrationLimits, ParsedConstraint, StatedNumber
-from orchestration import ModelMatchWorkflow
+from modelmatch_schemas import OrchestrationLimits, ParsedConstraint, ParsedPlan, StatedNumber, WriterOutput
+from orchestration import ModelMatchWorkflow, PlanValidationError
+from tools.chat_sessions import (ChatAccessError, ChatSessionStore, changed_fields, public_tool_calls,
+                                 task_turn, visible_text, CHANGE_TERMS)
 from tools.decision import decide
 from tools.official_specs import public_diagnostics
 from tools.run_diagnostics import failure_details, log_metadata
 
 ROOT = Path(__file__).parent
-CONTRACT = "provisional-modelmatch-chat-v1"
+CONTRACT = "project1-chat-v1"
 
 
 def normalized_origin(value: str) -> str:
@@ -144,14 +149,69 @@ class WebInput(BaseModel):
         return plan
 
 
-class ChatInput(WebInput):
-    question: str = Field(default="", max_length=6000)
-    message: str = Field(min_length=3, max_length=6000)
+class ChatInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    message: str = Field(min_length=1, max_length=6000)
+    session_id: str | None = Field(default=None, min_length=20, max_length=128)
 
     @field_validator("message")
     @classmethod
     def meaningful_message(cls, value):
-        return WebInput.meaningful(value)
+        value = WebInput.meaningful(value)
+        if visible_text(value) != value:
+            raise ValueError("Remove credentials from the message before submitting it.")
+        return value
+
+
+class ChatOutput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    response: str
+    session_id: str
+    tool_calls: list[dict]
+
+
+class ChatWebInput(WebInput):
+    """Internal adapter state; public analyze requests never accept these attributes."""
+
+    _session: object = PrivateAttr(default=None)
+    _latest: str = PrivateAttr(default="")
+
+    def validate_history(self, plan):
+        prior = self._session.confirmed_plan
+        if prior is None:
+            return
+        previous = ParsedPlan.model_validate(prior)
+        changes = changed_fields(self._latest)
+        # An anchored latest extraction also identifies an amendment without keywords.
+        for constraint in plan.constraints:
+            if constraint.source_quote and constraint.source_quote.casefold() in self._latest.casefold():
+                changes.add(constraint.metric)
+        for old in previous.constraints:
+            if old.metric not in changes:
+                plan.constraints = [c for c in plan.constraints if c.metric != old.metric] + [old]
+            else:
+                removal = re.search(r"\b(?:remove|drop|ignore)\s+(?:the\s+)?(?:" + CHANGE_TERMS.get(old.metric, r"(?!)") + ")", self._latest, re.I)
+                current = next((c for c in plan.constraints if c.metric == old.metric), None)
+                if removal:
+                    plan.constraints = [c for c in plan.constraints if c.metric != old.metric]
+                elif current is None or current.source_quote.casefold() not in self._latest.casefold():
+                    raise PlanValidationError("chat_update_unresolved", "Please restate the changed requirement and its target explicitly.")
+                elif old.hard:
+                    metric = CHANGE_TERMS.get(old.metric, r"(?!)")
+                    soft = re.search(r"(?:\b(?:soft|optional|prefer)\s+(?:" + metric + r")|(?:" + metric
+                        + r")\s+(?:is\s+)?(?:soft|optional|a preference)\b)", self._latest, re.I)
+                    if not soft:
+                        current.hard, current.hard_source_quote = True, old.hard_source_quote
+        for key in ("monthly_requests", "avg_input_tokens", "avg_output_tokens"):
+            old, current = getattr(previous.workload, key), getattr(plan.workload, key)
+            if old is not None and key not in changes:
+                setattr(plan.workload, key, old)
+            elif old is not None and (current is None or current.source_quote.casefold() not in self._latest.casefold()):
+                raise PlanValidationError("chat_workload_update_unresolved", "Please state the changed workload value explicitly.")
+        if previous.user_alpha is not None and "user_alpha" not in changes:
+            plan.user_alpha = previous.user_alpha
+        elif previous.user_alpha is not None and (plan.user_alpha is None or plan.user_alpha.source_quote.casefold() not in self._latest.casefold()):
+            raise PlanValidationError("chat_weight_update_unresolved", "Please state the new alpha explicitly.")
 
 
 class RecalculateInput(BaseModel):
@@ -173,10 +233,22 @@ class WebWorkflow(ModelMatchWorkflow):
         self.web_input = web_input
 
     async def lead(self, stage, payload):
+        if stage == "parse" and isinstance(self.web_input, ChatWebInput):
+            payload = {**payload, "conversation_background": [
+                    {"role": message["role"], "content": message["content"][:500]}
+                    for message in self.web_input._session.task_history],
+                "conversation_rule": "Visible assistant history is background only, never a source for requirements. "
+                    "Extract only from user_input for the current task. The latest explicit user amendment takes precedence. "
+                    "Do not quote old assistant text as a user requirement."}
         output = await super().lead(stage, payload)
         if stage == "parse":
             output = self.web_input.apply(output)
         return output
+
+    def validate_requirements(self, plan, user_input):
+        if isinstance(self.web_input, ChatWebInput):
+            self.web_input.validate_history(plan)
+        return super().validate_requirements(plan, user_input)
 
 
 def bounded(value, limit=16000):
@@ -278,6 +350,7 @@ class AnalysisService:
         self.ttl = 1800
         self.capacity = 8
         self.max_saved_bytes = 64 * 1024 * 1024
+        self.chat_sessions = ChatSessionStore()
 
     @property
     def offline(self):
@@ -349,6 +422,15 @@ def install_modelmatch(app):
     service = AnalysisService()
     app.state.modelmatch = service
 
+    @app.exception_handler(RequestValidationError)
+    async def chat_validation_error(request, error):
+        if request.url.path == "/chat":
+            return JSONResponse(status_code=422, content={"detail": [
+                {"loc": [part if isinstance(part, int) or part in ("body", "message", "session_id") else "unexpected_field"
+                         for part in entry["loc"]], "type": entry["type"], "msg": "Invalid chat request."}
+                for entry in error.errors()]})
+        return await request_validation_exception_handler(request, error)
+
     @router.get("/modelmatch")
     def page():
         return FileResponse(ROOT / "static/modelmatch.html", headers={"Cache-Control": "no-cache"})
@@ -372,10 +454,10 @@ def install_modelmatch(app):
     @router.get("/api/modelmatch/config")
     def config():
         return {"mode": "offline_synthetic" if service.offline else "live_vertex", "chat_contract": CONTRACT,
-                "contract_verified": False, "session_ttl_seconds": service.ttl, "grounding_enabled": False}
+                "contract_verified": True, "session_ttl_seconds": service.ttl, "grounding_enabled": False}
 
-    async def execute(body, emit, run_id=None):
-        hooks = WebHooks(emit, run_id)
+    async def execute(body, emit, run_id=None, *, hooks=None):
+        hooks = hooks or WebHooks(emit, run_id)
         try:
             outcome = await asyncio.wait_for(service.run(body, hooks), timeout=190)
             result, prepared = outcome
@@ -463,20 +545,136 @@ def install_modelmatch(app):
                 "writer_explanation_stale": original_alpha != decision["weights"]["alpha"]
                     or writer_selection_id != current_selection_id or selection_fields["selector"]["status"] == "unavailable"}
 
-    @router.post("/chat")
+    def frozen_chat_response(session, alpha=None):
+        service.prune()
+        saved = service.saved.get(session.analysis_id)
+        if saved is None or saved["prepared"] is None:
+            return "The saved evidence is unavailable or expired. No new research was started. Please restate the task if you want a new analysis."
+        result = saved["result"]
+        current_selection = result.get("selection")
+        if alpha is not None or session.weight_adjusted:
+            from recommendation import render_recommendation, writer_payload
+            from tools.selection_pipeline import selection_for_decision
+            selected_alpha = alpha if alpha is not None else session.alpha_override
+            decision = decide(saved["prepared"], task_type=result["decision"]["weights"]["task_type"], user_alpha=selected_alpha)
+            fields, _ = selection_for_decision(decision, saved["prepared"], frozen_context=saved.get("selection_context"))
+            current_selection = fields["selection"]
+            payload = writer_payload(decision, fields["selection"])
+            intent = WriterOutput(candidate_ids=payload["candidate_ids"], evidence_ids=payload["evidence_ids"], validation_steps=["task_pilot"])
+            text = "Deterministic weight adjustment using frozen evidence. The original Writer explanation is stale; no new Writer or research call was made.\n\n" + render_recommendation(decision, intent, fields["selection"])
+        else:
+            decision = result["decision"]
+            text = "Using the saved analysis; no new research was performed.\n\n"
+            if result.get("writer_fallback"):
+                text += "The original Writer failed; this is its labeled deterministic fallback.\n\n"
+            text += result["markdown"]
+        text += "\n\nSupporting evidence (observed values only):\n"
+        ids = {eid for slot in (current_selection or {}).get("slots", {}).values()
+               if slot.get("candidate") for eid in slot["candidate"]["evidence_ids"]}
+        for eid in sorted(ids):
+            evidence = decision["evidence"][eid]
+            if evidence["evidence_status"] == "observed":
+                text += f"- {evidence['metric']}: {evidence['value']} {evidence.get('statistic') or ''}; source: {evidence['source_url']}\n"
+        return text + "\nOfficial context, input/output limits and deployment specifications remain unknown unless explicitly verified in the saved evidence."
+
+    @router.post("/chat", response_model=ChatOutput)
     async def chat(body: ChatInput):
-        values = body.model_dump(exclude={"message", "question"})
-        request = WebInput(question=body.message, **values)
-        service.acquire(request.approve_live)
+        store = service.chat_sessions
+        session = None
+        chat_hooks = None
+        acquired = False
         run_id = str(uuid.uuid4())
         try:
-            response = await execute(request, lambda event: None, run_id)
-        except Exception:
-            raise HTTPException(503, "Analysis could not complete safely.", headers={"X-ModelMatch-Run-ID": run_id}) from None
+            store.require_enabled()
+            session = store.claim(body.session_id)
+            message = body.message
+            mode = task_turn(session, message)
+            if session.pending_scope:
+                if re.fullmatch(r"yes[.!]?|new task[.!]?", message, re.I):
+                    mode, message = "new", session.pending_scope
+                elif re.fullmatch(r"no[.!]?|same task[.!]?", message, re.I):
+                    mode, message = "refine", session.pending_scope
+                session.pending_scope = None
+            session.append("user", body.message)
+
+            def answer(text, calls=()):
+                text = visible_text(text)
+                session.append("assistant", text)
+                return ChatOutput(response=text, session_id=session.session_id, tool_calls=public_tool_calls(calls))
+
+            if mode == "confirm_scope":
+                session.pending_scope = message
+                return answer("Is this a new independent task? Reply 'yes' to start it without the previous task's constraints, or 'no' to refine the current task.")
+            alpha_match = re.fullmatch(r"(?:set |change |use )?alpha\s*(?:to|=|:)?\s*(0(?:\.\d+)?|1(?:\.0+)?)[.!]?", message, re.I)
+            if alpha_match and session.analysis_id:
+                if len(session.requirements) + len(message) + 31 > 6000:
+                    raise ChatAccessError(413, "Confirmed task context is full. Start a new session rather than silently discarding requirements.")
+                text = frozen_chat_response(session, float(alpha_match[1]))
+                if "original Writer explanation is stale" in text:
+                    session.alpha_override, session.weight_adjusted = float(alpha_match[1]), True
+                    session.requirements += "\nAdditional task information: " + message
+                    if session.confirmed_plan:
+                        session.confirmed_plan["user_alpha"] = {"value": session.alpha_override, "source_quote": message}
+                return answer(text)
+            if mode == "evidence":
+                return answer(frozen_chat_response(session))
+            requirements = message if mode == "new" else session.requirements + "\nAdditional task information: " + message
+            if len(requirements) > 6000:
+                raise ChatAccessError(413, "Confirmed task context exceeds 6,000 characters. Start a new session; requirements were not truncated.")
+            def retain_requirements():
+                if mode == "new":
+                    session.confirmed_plan, session.analysis_id = None, None
+                    session.pending_clarification = False
+                    session.alpha_override, session.weight_adjusted = None, False
+                    session.pending_scope = None
+                    session.task_history = [{"role": "user", "content": message}]
+                session.requirements = requirements
+
+            if len(requirements) < 3:
+                retain_requirements()
+                session.pending_clarification = True
+                return answer("Please describe the task you want the model to perform.")
+            store.check_allowance()
+            service.acquire(True)
+            acquired = True
+            store.evaluation_runs += 1
+            retain_requirements()
+            request = ChatWebInput(question=requirements, approve_live=True)
+            request._session, request._latest = session, message
+            session.analysis_id = None
+            chat_hooks = WebHooks(lambda event: None, run_id)
+            response = await execute(request, lambda event: None, run_id, hooks=chat_hooks)
+            result = response["result"]
+            session.pending_clarification = result.get("status") == "clarification_needed"
+            if result.get("plan") and result.get("status") not in ("clarification_needed", "error"):
+                session.confirmed_plan = deepcopy(result["plan"])
+            if result.get("decision"):
+                session.analysis_id = response["analysis_id"]
+                session.alpha_override, session.weight_adjusted = None, False
+            else:
+                session.analysis_id = None
+            text = result["markdown"]
+            if result.get("writer_fallback"):
+                text = "Writer generation failed. This is a deterministic fallback, not an accepted Writer response.\n\n" + text
+            return answer(text, result.get("tool_calls", ()))
+        except ChatAccessError as error:
+            raise HTTPException(error.status, str(error)) from None
+        except HTTPException:
+            raise
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            log_metadata("chat_turn_failed", run_id=run_id, error=failure_details(error))
+            text = "Analysis could not complete safely. No synthetic results were substituted. The failed turn was not automatically retried."
+            if session:
+                session.append("assistant", text)
+                return ChatOutput(response=text, session_id=session.session_id, tool_calls=public_tool_calls(chat_hooks.calls if chat_hooks else ()))
+            raise HTTPException(503, text) from None
         finally:
-            service.active -= 1
-        return {"contract": CONTRACT, "contract_verified": False, "reply": response["result"]["markdown"],
-                "tool_calls": response["result"]["tool_calls"], **response}
+            if acquired:
+                service.active -= 1
+            if session:
+                store.release(session)
 
     @app.middleware("http")
     async def modelmatch_request_limits(request: Request, call_next):
