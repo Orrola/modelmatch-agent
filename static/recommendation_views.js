@@ -74,20 +74,50 @@ globalThis.ModelMatchRecommendations = {
         return;
       }
       const slot = state.selection.slots.best_overall;
-      const card = renderCard(candidate);
+      const card = el('article', 'model-card best-summary');
+      card.dataset.modelId = candidate.model_id;
       card.dataset.role = 'best_overall';
-      card.append(el('p', 'selection-reason', 'Highest-ranked qualified model in the supported scoring cohort.'));
-      const cost = evidenceFor(candidate).find(e => e.evidence_status === 'observed' && e.source_type === 'derived' && e.metric === 'monthly_cost_usd' && e.value === candidate.estimated_monthly_cost_usd);
-      if (cost) card.append(el('p', 'cost-label', `Estimated monthly token cost: $${number(cost.value)}`));
-      if (slot.candidate.family_status !== 'curated_aa_label') card.append(badge('Family unknown', 'warning'));
-      const facts = el('details', 'card-evidence-details');
-      facts.append(el('summary', '', 'Model information & evidence'), el('p', 'identity-line', identityLine(candidate.model_id)),
-        el('p', 'raw-rank', `${rawRank(candidate.model_id)} · AA ID: ${candidate.model_id}`), operational(candidate));
+      const header = el('div', 'best-header'), title = el('div', 'best-title');
+      title.append(el('p', 'best-label', 'BEST OVERALL'), modelTitle(candidate), statusBadge(candidate));
+      const score = el('div', 'score-block');
+      score.append(el('strong', 'score-number', number(candidate.S)), el('span', 'score-caption', 'Decision score S · Custom policy points'));
+      header.append(title, score);
+      const metrics = el('div', 'metric-strip');
+      for (const [key, label] of [['G', 'General Intelligence (G)'], ['U', 'Use-case Capability (U)'], ['O', 'Operational Adjustment (O)']]) {
+        const item = el('div', 'metric-item');
+        item.append(el('span', '', label), el('strong', '', number(candidate[key]))); metrics.append(item);
+      }
+      const eligibility = el('div', 'metric-item');
+      eligibility.append(el('span', '', 'Eligibility'), badge(pretty(candidate.eligibility), candidate.eligibility === 'eligible' ? 'good' : 'warning'));
+      metrics.append(eligibility);
+      const reason = slot.reason_code === 'highest_original_rank_in_cohort'
+        ? 'Highest-ranked qualified model in the supported scoring cohort.' : reasonLabel(slot.reason_code);
+      const why = el('p', 'selection-reason'); why.append(el('strong', '', 'Why recommended: '), el('span', '', reason));
+      card.append(header, metrics, why);
+      const observed = evidenceFor(candidate).filter(e => e.evidence_status === 'observed' && Number.isFinite(e.value) && e.value >= 0);
+      const highlights = el('div', 'best-highlights');
+      const prices = ['pricing.price_1m_input_tokens', 'pricing.price_1m_output_tokens'].every(metric => observed.some(e => e.source_type === 'artificial_analysis' && e.metric === metric));
+      const workload = ['monthly_requests', 'avg_input_tokens', 'avg_output_tokens'].every(key => Number.isFinite(candidate.workload?.[key]) && candidate.workload[key] >= 0);
+      const cost = observed.find(e => e.source_type === 'derived' && e.metric === 'monthly_cost_usd' && e.value === candidate.estimated_monthly_cost_usd);
+      if (cost && prices && workload) highlights.append(el('span', '', `Est. monthly API cost: $${number(cost.value)}`));
+      for (const [metric, label, unit] of [
+        ['performance_v3.mean_time_to_first_token_seconds', 'Mean TTFT', 's'],
+        ['performance_v3.mean_output_tokens_per_second', 'Mean output speed', 'tokens/s'],
+      ]) {
+        const record = observed.find(e => e.metric === metric && e.statistic === 'mean' && e.source_type === 'artificial_analysis');
+        if (record) highlights.append(el('span', '', `${label}: ${number(record.value)} ${unit}`));
+      }
+      if (highlights.children.length) card.append(highlights);
+      if (typeof candidate.O === 'number' && candidate.O < 0) card.append(el('p', 'model-warning', `Your stated operational targets deduct ${number(-candidate.O)} points for this model.`));
       const gaps = missingFor(candidate.model_id);
+      if (gaps.length) card.append(el('p', 'missing-signal', `${gaps.length} unavailable ${gaps.length === 1 ? 'metric' : 'metrics'} — inspect evidence details.`));
+      const facts = el('details', 'card-evidence-details');
+      facts.append(el('summary', '', 'Evidence details'), el('p', 'identity-line', identityLine(candidate.model_id)),
+        el('p', 'raw-rank', `${rawRank(candidate.model_id)} · AA ID: ${candidate.model_id}`), operational(candidate));
       if (gaps.length) facts.append(el('p', 'field-help', gaps.map(g => `${metricLabel(g.metric)}: ${reasonLabel(g.reason)}`).join(' · ')));
-      card.append(facts, familyConfigurations(candidate.model_id, true));
+      facts.append(familyConfigurations(candidate.model_id, true));
       const actions = el('div', 'card-actions');
-      actions.append(button('View model details ↗', () => api.openRawModel(candidate, state.decision, state.modelIdentity)), selectionControl(candidate));
+      actions.append(button('View model details ↗', () => api.openRawModel(candidate, state.decision, state.modelIdentity)), facts, selectionControl(candidate));
       card.append(actions);
       panel.replaceChildren(card);
     }

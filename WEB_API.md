@@ -297,6 +297,53 @@ Evidence sessions are **ephemeral, single-process memory**, retained for at most
 
 Before Cloud Run production deployment: add authentication/access control, tenant-scoped shared evidence storage with TTL and encryption, distributed request budgets/rate limits, and authenticated trace access. Multiple instances/workers are unsupported for reliable recalculation until shared storage is added. Validate the container, set an HTTP timeout exceeding the bounded workflow, review concurrency, verify the runtime service account/Vertex permissions and AA secret injection, and verify the course contract. Do not expose this unauthenticated research endpoint publicly as-is. No IAM/API changes, billable tests, or deployment are automatic.
 
+### Runtime identity, origin and evaluator setup
+
+Install the locked dependencies with `uv sync --locked` for local use; the container
+uses `uv sync --locked --no-dev`. Keep `MODELMATCH_OFFLINE=0` in production.
+Supply `GOOGLE_CLOUD_PROJECT=ieor4570-yg3133` and the configured Vertex location
+explicitly rather than relying on a local gcloud installation. Preserve the configured
+Gemini model IDs. Startup, `/healthz`, static assets and `/api/modelmatch/config`
+do not initiate Gemini or AA analysis requests.
+
+Cloud Run ADC comes from its attached runtime service account, not a developer's local
+ADC file. Inject `AA_API_KEY` server-side through Secret Manager or secure runtime
+configuration; never bundle `.env`, downloaded service-account keys or credentials.
+Manually verify least-privilege Vertex prediction access (typically
+`roles/aiplatform.user`, including `aiplatform.endpoints.predict`) and, when using
+Secret Manager, `roles/secretmanager.secretAccessor` on the individual AA secret.
+Verify `serviceusage.services.use` where required. Check Vertex AI, Cloud Run,
+Artifact Registry and any used Secret Manager/Cloud Build APIs for the existing
+deployment path. These are prerequisites to verify, not permissions or services
+configured by the application.
+
+For the current TLS-ingress service, the exact external origin is:
+
+```text
+MODELMATCH_PUBLIC_ORIGIN=https://modelmatch-agent-git-978311583991.europe-west1.run.app
+```
+
+Protected POST requests require matching Host and matching Origin when supplied.
+Client-supplied forwarded headers do not expand this allowlist. Leave the setting
+empty for local same-origin development; do not use wildcard CORS or
+`FORWARDED_ALLOW_IPS=*` to bypass an origin error. Origin checking is not authentication.
+
+For evaluator `/chat` access, explicitly configure the server-side evaluation flag and
+bounded allowance documented above; the grader sends only `message` and optional
+`session_id`. The allowance applies to `/chat`, not all other paid entry points.
+Protect analysis, `/run`, recalculation and traces through an appropriate access-control
+strategy as well. Keep one worker and accept ephemeral sessions for a limited
+single-instance evaluation; scaling requires shared session state and distributed
+budgets. Instance restarts reset local counters, so they are not a global spending cap.
+Choose and verify platform timeout, concurrency and evaluator access separately;
+no configuration change is implied by these instructions.
+
+For provider-free container checks, start the image without credentials and request only
+`/healthz`, `/api/modelmatch/config` and `/modelmatch`. Verify non-default `PORT`, static
+assets, non-root execution and excluded artifacts. A healthy process does not establish
+successful live research. Avoid sensitive input in `/run` query strings; platform access
+logs may retain URLs even when application diagnostics omit request bodies.
+
 
 ## Recommendation presentation metadata
 

@@ -79,9 +79,13 @@ class SubmissionReadinessTests(unittest.TestCase):
         self.assertIn("MODELMATCH_OFFLINE=0", docker)
         self.assertNotIn("COPY . ", docker)
 
-    def test_deployment_instructions_preserve_unverified_release_gates(self):
-        text = (ROOT / "DEPLOYMENT.md").read_text()
+    def test_public_operating_instructions_preserve_deployment_and_evaluation_safeguards(self):
+        text = (ROOT / "WEB_API.md").read_text()
         self.assertFalse(CJK.search(text))
-        for required in ("approve_live=true", "GET /run", "not authentication", "one worker",
-                         "not been verified locally", "Writer failure", "Project 2", "service account"):
+        for required in ("MODELMATCH_OFFLINE=0", "MODELMATCH_PUBLIC_ORIGIN=", "not authentication", "one worker",
+                         "MODELMATCH_CHAT_EVALUATION_ENABLED=1", "MODELMATCH_CHAT_EVALUATION_MAX_RUNS=3",
+                         "service account", "Secret Manager", "not a global spending cap"):
             self.assertIn(required, text)
+        rules = (ROOT / ".gitignore").read_text().splitlines()
+        for name in ("SUBMISSION.md", "DEPLOYMENT.md", "FAMILY_MAPPING.md"):
+            self.assertIn(f"/{name}", rules)

@@ -34,13 +34,21 @@ def main():
     fixtures = presentation_fixtures()
     (OUTPUT / "synthetic-renderings.json").write_text(json.dumps(fixtures, indent=2))
     chrome = shutil.which("google-chrome") or "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-    report = {"mode": "synthetic_fixture_browser_review_not_live_workflow", "provider_calls": 0, "checks": [], "screenshots": []}
+    report = {"mode": "synthetic_fixture_browser_review_not_live_workflow", "provider_calls": 0, "checks": [], "screenshots": [], "measurements": {}}
     server = process = browser = None
     port, debug = free_port(), free_port()
     def check(name, condition):
         report["checks"].append({"name": name, "passed": bool(condition)})
         if not condition:
             raise AssertionError(name)
+    def capture(name):
+        report["measurements"][name] = browser.evaluate("""(()=>{
+          const card=document.querySelector('#ranking>article, #ranking>.recommendation-empty').getBoundingClientRect();
+          const alternatives=document.getElementById('potential-alternatives').getBoundingClientRect();
+          return {viewport:innerWidth,card:{x:card.x,width:card.width,height:card.height},alternatives:{x:alternatives.x,width:alternatives.width}};
+        })()""")
+        browser.screenshot(name, True)
+        report["screenshots"].append(name)
     try:
         with tempfile.TemporaryDirectory(prefix="chrome-fixture-", dir=OUTPUT, ignore_cleanup_errors=True) as profile, (OUTPUT / "browser-server.log").open("w") as log:
             env = {**os.environ, "MODELMATCH_OFFLINE": "1", "LITELLM_LOCAL_MODEL_COST_MAP": "True"}
@@ -108,23 +116,34 @@ def main():
                 if name == "partial":
                     check("Partial-proxy caveat appears near heading only", browser.evaluate("document.getElementById('ranking-subtitle').textContent.includes('partial proxy') && !document.getElementById('ranking').textContent.includes('partial proxy')"))
                 check(f"{name}: bounded recommendation with alternatives immediately below", browser.evaluate(
-                    "document.querySelector('.best-overall').getBoundingClientRect().width<=640 && "
+                    "Math.abs(document.querySelector('.best-overall').getBoundingClientRect().width-document.getElementById('potential-alternatives').getBoundingClientRect().width)<1 && "
                     "document.querySelector('.best-overall').nextElementSibling.id==='potential-alternatives'"))
                 check(f"{name}: readable alternative headings", browser.evaluate("document.getElementById('potential-alternatives').textContent.includes('Task-specific score available') || !document.getElementById('potential-alternatives').textContent.includes('Backend order:')"))
-                browser.screenshot(f"desktop-{name}.png", True); report["screenshots"].append(f"desktop-{name}.png")
+                capture(f"desktop-{name}.png")
             browser.evaluate("window.fixtureName='three'")
             browser.click("#analyze"); browser.wait("document.getElementById('ranking').dataset.count==='1' && !document.getElementById('analyze').disabled")
-            browser.click(".family-configurations summary")
+            check("Compact header keeps exact model and score", browser.evaluate("document.querySelector('#ranking .model-title').textContent===window.fixtureBundle.three.decision.candidates.a.name && document.querySelector('#ranking .score-number').textContent==='90'"))
+            check("Evidence and eligibility remain visible", browser.evaluate("document.querySelector('#ranking .best-title').textContent.includes('Fully evaluable') && document.querySelector('#ranking .metric-strip').textContent.includes('Eligible')"))
+            check("Operational highlights use observed values", browser.evaluate("document.querySelectorAll('#ranking .best-highlights>span').length===3 && document.querySelector('#ranking .best-highlights').textContent.includes('Mean TTFT: 1 s')"))
+            browser.click("#ranking .card-evidence-details>summary")
+            check("Evidence details expands exact IDs", browser.evaluate("document.querySelector('#ranking .card-evidence-details').open && document.querySelector('#ranking .card-evidence-details').textContent.includes('AA ID: a')"))
+            browser.click("#ranking .family-configurations summary")
             check("Explicit other configuration expands", browser.evaluate("document.querySelector('.family-configurations').open && document.querySelector('.configuration-row').textContent.includes('(b)')"))
             browser.click("#raw-ranking .raw-ranking-group summary")
             browser.click("#raw-ranking .raw-ranking-row:nth-of-type(3) .model-title")
             check("No empty family expander in model drawer", browser.evaluate("document.getElementById('model-drawer').open && document.querySelector('#drawer-content .technical-panel pre').textContent.includes('\"aa_model_id\": \"c\"') && document.querySelectorAll('#drawer-content .family-configurations').length===0"))
             browser.click("#close-drawer")
+            browser.click("#ranking .card-actions .text-button")
+            check("Model detail action opens Best Overall", browser.evaluate("document.getElementById('model-drawer').open && document.querySelector('#drawer-content .technical-panel pre').textContent.includes('\"aa_model_id\": \"a\"')"))
+            browser.click("#close-drawer")
+            browser.click("#ranking input[type=checkbox]")
+            check("Compare checkbox selects canonical candidate", browser.evaluate("document.querySelector('#ranking input[type=checkbox]').checked && !document.getElementById('compare-bar').hidden && document.getElementById('selected-count').textContent==='1'"))
+            browser.click("#ranking input[type=checkbox]")
             browser.fill("#alpha", ".7")
             browser.wait("document.getElementById('alpha-value').textContent==='70%' && document.getElementById('weight-status').textContent.startsWith('Updated')")
             check("Recalculation marks narrative stale", browser.evaluate("window.recalcCount===1 && document.getElementById('writer-stale').textContent.includes('has not been regenerated')"))
             check("Recalculation updates Best Overall", browser.evaluate("document.querySelector('#ranking>article').dataset.modelId==='d'"))
-            browser.screenshot("desktop-adjusted.png", True); report["screenshots"].append("desktop-adjusted.png")
+            capture("desktop-adjusted.png")
             browser.click("#reset")
             browser.wait("document.getElementById('alpha-value').textContent==='60%' && document.getElementById('weight-status').textContent.startsWith('Updated')")
             check("Reset uses the existing engine fallback default", browser.evaluate("window.recalcCount===2 && document.querySelector('#ranking>article').dataset.modelId==='a'"))
@@ -134,8 +153,9 @@ def main():
                     "document.querySelector('#ranking>article').getBoundingClientRect().width === "
                     "document.querySelector('.best-overall').getBoundingClientRect().width"))
                 check(f"Width {width}: card content does not overflow", browser.evaluate("Array.from(document.querySelectorAll('#ranking>article')).every(e=>e.scrollWidth<=e.clientWidth+1)"))
+                check(f"Width {width}: card aligns with alternatives", browser.evaluate("Math.abs(document.querySelector('#ranking>article').getBoundingClientRect().width-document.getElementById('potential-alternatives').getBoundingClientRect().width)<1"))
                 check(f"Width {width}: no page overflow", browser.evaluate("document.documentElement.scrollWidth<=innerWidth+1"))
-                browser.screenshot(f"comparison-{width}.png", True); report["screenshots"].append(f"comparison-{width}.png")
+                capture(f"comparison-{width}.png")
             browser.click("#ranking .model-title")
             check("Mobile detail drawer retains evidence", browser.evaluate("document.getElementById('model-drawer').open && document.getElementById('drawer-content').textContent.includes('Synthetic fixture')"))
             browser.screenshot("mobile-details.png"); report["screenshots"].append("mobile-details.png")

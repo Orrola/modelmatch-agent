@@ -16,6 +16,11 @@ __pycache__/
 # Temporary internal specifications; runtime and tests must not depend on these.
 /docs/
 
+# Historical guides retained locally for private reference.
+/SUBMISSION.md
+/DEPLOYMENT.md
+/FAMILY_MAPPING.md
+
 # Test, coverage and build artifacts.
 .pytest_cache/
 .coverage
@@ -47,3 +52,7 @@ test-results/
 playwright-report/
 *.tmp
 *.temp
+
+/SUBMISSION.md
+/DEPLOYMENT.md
+/FAMILY_MAPPING.md
