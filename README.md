@@ -81,7 +81,47 @@ Users can adjust the weighting to explore how recommendations change without rep
 ---
 
 
-## 3. Example Queries & Model Comparisons
+## 3. Data Sources & Methodology
+
+### Artificial Analysis
+
+ModelMatch AI uses the [Artificial Analysis](https://artificialanalysis.ai/) Free API as its primary model evaluation source.
+
+**Data access:** `GET https://artificialanalysis.ai/api/v2/language/models/free`
+
+
+### Evidence-Grounded Decisions
+
+ModelMatch distinguishes between:
+
+- **Fully evaluable:** Sufficient evidence exists to compute the composite score.
+- **Provisional:** Some evidence supports further consideration, but the full ranking is not established.
+- **Unverified:** A mandatory requirement cannot be confirmed using available evidence.
+- **Ineligible:** A known hard requirement is violated.
+
+This separation prevents incomplete benchmark coverage from being silently treated as proof of model suitability.
+
+
+---
+
+
+## 4. Deployment
+
+**Application:** [ModelMatch AI](https://modelmatch-agent-git-978311583991.europe-west1.run.app/)
+
+### How to Use
+
+1. Describe the application you are building and the task the LLM should perform.
+2. Optionally specify your expected workload, monthly budget, latency preferences, or technical requirements.
+3. Run the analysis to view the research process and model comparison.
+4. Explore recommended candidates, score breakdowns, and supporting evidence.
+5. Adjust the General Intelligence weight to examine how model selection changes.
+
+The interface includes Overview, Comparison, Evidence, and model-detail views.
+
+---
+
+## 5. Example Queries & Model Comparisons
 
 The following cases illustrate how ModelMatch AI approaches practical model selection problems.
 
@@ -162,48 +202,6 @@ ModelMatch separates **model quality** from **deployment eligibility** and does 
 **Evidence Source:** Artificial Analysis Free API, `GET /api/v2/language/models/free`; fields `evaluations.artificial_analysis_intelligence_index` and `evaluations.artificial_analysis_legal_index`. Verified input-capacity evidence would require appropriate official provider specifications.
 
 **Evaluation Status:** The limitation-handling policy is supported by existing offline evidence. A complete matching historical live response has not been recovered.
-
-
----
-
-
-## 4. Data Sources & Methodology
-
-### Artificial Analysis
-
-ModelMatch AI uses the [Artificial Analysis](https://artificialanalysis.ai/) Free API as its primary model evaluation source.
-
-**Data access:** `GET https://artificialanalysis.ai/api/v2/language/models/free`
-
-
-### Evidence-Grounded Decisions
-
-ModelMatch distinguishes between:
-
-- **Fully evaluable:** Sufficient evidence exists to compute the composite score.
-- **Provisional:** Some evidence supports further consideration, but the full ranking is not established.
-- **Unverified:** A mandatory requirement cannot be confirmed using available evidence.
-- **Ineligible:** A known hard requirement is violated.
-
-This separation prevents incomplete benchmark coverage from being silently treated as proof of model suitability.
-
-
----
-
-
-## 5. Deployment
-
-**Application:** [ModelMatch AI](https://modelmatch-agent-git-978311583991.europe-west1.run.app/)
-
-### How to Use
-
-1. Describe the application you are building and the task the LLM should perform.
-2. Optionally specify your expected workload, monthly budget, latency preferences, or technical requirements.
-3. Run the analysis to view the research process and model comparison.
-4. Explore recommended candidates, score breakdowns, and supporting evidence.
-5. Adjust the General Intelligence weight to examine how model selection changes.
-
-The interface includes Overview, Comparison, Evidence, and model-detail views.
 
 ---
 
