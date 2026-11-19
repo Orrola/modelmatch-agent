@@ -27,22 +27,20 @@ def synthetic_inputs(*, specs=None, cost=True, requirements=None):
     case.setUp()
     if specs is not None:
         case.specs = specs
-    with patch.object(selector_tests, "build_identity_sidecar", wraps=build_identity_sidecar) as builder:
-        decision, metadata, coverage = case.inputs(cost=cost, requirements=requirements)
-    mapping = builder.call_args.kwargs["mapping"]
+    decision, metadata, coverage = case.inputs(cost=cost, requirements=requirements)
     req = ([OperationalRequirement("monthly_cost_usd")] if cost else []) if requirements is None else requirements
     prepared = build_candidates(case.snapshot, RelevanceDecision("Synthetic task", "finance", "strong", "Synthetic task proxy only."),
         req, workload=Workload(1, 1000000, 1000000), shortlist_size=1)
-    return decision, metadata, coverage, case.snapshot, prepared, mapping
+    return decision, metadata, coverage, case.snapshot, prepared
 
 
 class CanonicalContractTests(unittest.TestCase):
-    def test_zero_one_two_three_slots_preserve_complete_evidence_and_render_order(self):
+    def test_zero_or_one_best_overall_preserve_complete_evidence_and_render_order(self):
         cases = [
             (0, dict(requirements=[OperationalRequirement("context_window", 100000, hard=True)])),
             (1, dict(specs=[("a", 90, 100, "A", None)])),
-            (2, dict(cost=False)),
-            (3, {}),
+            (1, dict(cost=False)),
+            (1, {}),
         ]
         for expected, values in cases:
             with self.subTest(count=expected):
@@ -63,11 +61,11 @@ class CanonicalContractTests(unittest.TestCase):
                 self.assertEqual(decision, before)
                 self.assertEqual(payload["status"] == "not_supported", expected == 0)
 
-    def test_canonical_roles_differ_from_raw_top_three_and_writer_cannot_reorder(self):
+    def test_single_canonical_candidate_cannot_be_replaced_by_raw_top_three(self):
         decision, metadata, coverage, *_ = synthetic_inputs()
         selection = select_recommendations(decision, metadata, coverage)
         payload = writer_payload(decision, selection)
-        self.assertEqual(payload["candidate_ids"], ["a", "c", "d"])
+        self.assertEqual(payload["candidate_ids"], ["a"])
         self.assertEqual([r["model_id"] for r in decision["rankings"]["fully_evaluable"][:3]], ["a", "b", "c"])
         for ids, evidence in ((["a", "b", "c"], payload["evidence_ids"]),
                               (["d", "c", "a"], payload["evidence_ids"]),
@@ -80,31 +78,28 @@ class CanonicalContractTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             writer_payload(decision, altered)
 
-    def test_frozen_context_reused_without_mapping_reload_and_deterministic_identity(self):
-        decision, _, _, snapshot, prepared, mapping = synthetic_inputs()
-        with patch("tools.selection_pipeline.load_family_mapping", return_value=mapping):
-            original, context = selection_for_decision(decision, prepared, snapshot=snapshot)
-        self.assertEqual(original["selector"]["status"], "limited_metadata")
-        self.assertEqual(context["metadata"]["mapping_version"], mapping["version"])
-        with patch("tools.selection_pipeline.load_family_mapping", side_effect=AssertionError("No mapping reload")):
-            repeated, same_context = selection_for_decision(decision, prepared, frozen_context=context)
-            self.assertEqual(original, repeated)
-            self.assertIs(same_context, context)
-            updated = decide(prepared, user_alpha=.7)
-            changed, _ = selection_for_decision(updated, prepared, frozen_context=context)
+    def test_frozen_context_reused_without_network_and_deterministic_identity(self):
+        decision, _, _, snapshot, prepared = synthetic_inputs()
+        original, context = selection_for_decision(decision, prepared, snapshot=snapshot)
+        self.assertEqual(original["selector"]["status"], "available")
+        self.assertEqual(context["metadata"]["metadata_version"], "model-identity-v2")
+        repeated, same_context = selection_for_decision(decision, prepared, frozen_context=context)
+        self.assertEqual(original, repeated)
+        self.assertIs(same_context, context)
+        updated = decide(prepared, user_alpha=.7)
+        changed, _ = selection_for_decision(updated, prepared, frozen_context=context)
         self.assertNotEqual(changed["selection"]["selection_id"], original["selection"]["selection_id"])
-        self.assertEqual(changed["selection"]["mapping_version"], mapping["version"])
+        self.assertEqual(changed["selection"]["metadata_version"], context["metadata_version"])
 
-    def test_snapshot_mapping_policy_and_metadata_mismatch_are_independent_failures(self):
-        decision, _, _, snapshot, prepared, mapping = synthetic_inputs()
-        with patch("tools.selection_pipeline.load_family_mapping", return_value=mapping):
-            original, context = selection_for_decision(decision, prepared, snapshot=snapshot)
-        for field in ("snapshot", "mapping", "policy", "metadata"):
+    def test_snapshot_identity_policy_and_metadata_mismatch_are_independent_failures(self):
+        decision, _, _, snapshot, prepared = synthetic_inputs()
+        original, context = selection_for_decision(decision, prepared, snapshot=snapshot)
+        for field in ("snapshot", "identity_version", "policy", "metadata"):
             altered = deepcopy(context)
             if field == "snapshot":
                 altered["snapshot"]["snapshot_id"] = "other-snapshot"
-            elif field == "mapping":
-                altered["family_mapping"]["version"] = "other-mapping"
+            elif field == "identity_version":
+                altered["metadata_version"] = "other-identity"
             elif field == "policy":
                 altered["selector_version"] = "other-policy"
             else:
@@ -120,9 +115,8 @@ class CanonicalContractTests(unittest.TestCase):
 
     def test_saved_session_isolated_from_mutation_of_prepared_and_metadata(self):
         from modelmatch_web import AnalysisService
-        decision, _, _, snapshot, prepared, mapping = synthetic_inputs()
-        with patch("tools.selection_pipeline.load_family_mapping", return_value=mapping):
-            fields, context = selection_for_decision(decision, prepared, snapshot=snapshot)
+        decision, _, _, snapshot, prepared = synthetic_inputs()
+        fields, context = selection_for_decision(decision, prepared, snapshot=snapshot)
         service = AnalysisService()
         key = service.remember({"decision": decision, **fields}, prepared, context)
         frozen = deepcopy(service.saved[key])
@@ -142,12 +136,11 @@ class WorkflowSelectionTests(unittest.IsolatedAsyncioTestCase):
         return await workflow.run(question), workflow, runner
 
     async def test_real_sdk_writer_receives_canonical_order_same_lead_and_raw_decision(self):
-        _, _, _, snapshot, _, mapping = synthetic_inputs(cost=False)
-        with patch("tools.selection_pipeline.load_family_mapping", return_value=mapping):
-            result, workflow, runner = await self.run_workflow(snapshot=snapshot)
+        _, _, _, snapshot, _ = synthetic_inputs(cost=False)
+        result, workflow, runner = await self.run_workflow(snapshot=snapshot)
         self.assertEqual(result["writer_status"], "accepted", result.get("error"))
         payload = writer_payload(result["decision"], result["selection"])
-        self.assertEqual(payload["candidate_ids"], ["a", "c"])
+        self.assertEqual(payload["candidate_ids"], ["a"])
         writer = next(c for c in runner.calls if c["agent"].name == "Writer")
         self.assertEqual(json.loads(writer["input"])["candidate_ids"], payload["candidate_ids"])
         self.assertEqual(result["decision"], decide(workflow.prepared(), task_type="specialized_domain"))
@@ -157,10 +150,10 @@ class WorkflowSelectionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len({c["context"].context_id for c in researchers}), 3)
         self.assertEqual(len({c["context"].context_id for c in researchers} & {workflow.lead_context.context_id}), 0)
 
-    async def test_three_role_strict_writer_generation_and_frozen_complete_metadata(self):
+    async def test_best_overall_strict_writer_generation_and_frozen_complete_metadata(self):
         specs = [("a", 90, 100, "A", "fa"), ("b", 89, 90, "A", "fa"),
                  ("c", 88, 50, "B", "fb"), ("d", 87, 40, "C", "fc")]
-        _, _, _, snapshot, _, mapping = synthetic_inputs(specs=specs)
+        _, _, _, snapshot, _ = synthetic_inputs(specs=specs)
         plan = default_plan()
         plan.workload = ParsedWorkload(
             monthly_requests=StatedNumber(value=1, source_quote="Monthly requests 1"),
@@ -169,12 +162,11 @@ class WorkflowSelectionTests(unittest.IsolatedAsyncioTestCase):
         plan.constraints = [ParsedConstraint(metric="monthly_cost_usd", target=10000,
             source_quote="soft monthly budget 10000")]
         question = USER_INPUT + " Monthly requests 1; average input tokens 1000000; average output tokens 1000000; soft monthly budget 10000."
-        with patch("tools.selection_pipeline.load_family_mapping", return_value=mapping):
-            result, _, runner = await self.run_workflow(ScriptedModel(plan=plan), snapshot, question)
+        result, _, runner = await self.run_workflow(ScriptedModel(plan=plan), snapshot, question)
         self.assertEqual(result["selector"]["status"], "available", result.get("error"))
         self.assertEqual(result["writer_status"], "accepted")
         payload = json.loads(next(c["input"] for c in runner.calls if c["agent"].name == "Writer"))
-        self.assertEqual(payload["candidate_ids"], ["a", "c", "d"])
+        self.assertEqual(payload["candidate_ids"], ["a"])
         self.assertEqual(payload["selection_id"], result["selection"]["selection_id"])
         self.assertNotIn("potential_alternatives", payload)
 
@@ -232,7 +224,6 @@ class SelectionHttpTests(unittest.IsolatedAsyncioTestCase):
         saved = deepcopy(self.service.saved[key])
         with patch.object(self.service, "run", side_effect=AssertionError("No research rerun")), \
              patch("tools.artificial_analysis.ArtificialAnalysisClient.fetch_snapshot", side_effect=AssertionError("No AA fetch")), \
-             patch("tools.selection_pipeline.load_family_mapping", side_effect=AssertionError("No mapping reload")), \
              patch("vertex_runtime.create_models", side_effect=AssertionError("No provider creation")):
             same = (await self.client.post("/api/modelmatch/recalculate", json={"analysis_id": key, "user_alpha": .5})).json()
             changed = (await self.client.post("/api/modelmatch/recalculate", json={"analysis_id": key, "user_alpha": .7})).json()
@@ -245,7 +236,7 @@ class SelectionHttpTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(body["research_rerun"])
             self.assertTrue(body["writer_narrative_available"])
             self.assertEqual(body["decision"]["evidence"], done["result"]["decision"]["evidence"])
-            self.assertEqual(body["selection"]["mapping_version"], saved["selection_context"]["metadata"]["mapping_version"])
+            self.assertEqual(body["selection"]["metadata_version"], saved["selection_context"]["metadata"]["metadata_version"])
             self.assertNotIn("selection_context", body)
         self.assertEqual(self.service.saved[key], saved)
 

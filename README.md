@@ -39,7 +39,7 @@ The application provides:
 | **Potential Alternatives — Limited Evidence** | Unranked models with a known general or task-specific index and an unavailable composite score |
 | **Evidence and Operational Tradeoffs** | G/U/O/S breakdown, estimated monthly token cost, mean latency, output speed, data sources, and qualification status |
 
-ModelMatch shows a Best Overall recommendation only when an eligible model has enough evidence for a complete score.
+ModelMatch shows a Best Overall recommendation only when an eligible model has enough evidence for a complete score. Recommendations use exact AA model entries, not model-family grouping or diversity rules. Raw Ranking preserves each eligible, fully scored entry; limited-evidence alternatives remain unranked.
 
 ### Target Users
 
@@ -264,7 +264,6 @@ ModelMatch AI is a decision-support system, not an independent LLM benchmarking 
 
 - **Incomplete Benchmark Coverage:** Not every model has available General Intelligence and task-specific Capability scores.
 - **Snapshot Dependence:** Model rankings and prices may change as source data is updated.
-- **Family Identification:** Some model families cannot be confirmed for a given data snapshot, limiting the related configurations shown in model details.
 - **Operational Uncertainty:** Average latency does not guarantee tail latency or production service levels.
 - **Unverified Specifications:** Context capacity, deployment availability, and residency requirements may require independent official verification.
 - **Custom Decision Policy:** Composite scores and weighting choices represent a transparent selection heuristic, not a validated measure of real-world performance.

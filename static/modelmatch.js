@@ -398,7 +398,7 @@ function renderDrawer(id) {
   const c = d?.candidates[id];
   if (!c) return;
   const title = el('h2', '', c.name); title.id = 'drawer-title';
-  const children = [title, el('p', 'field-help', original ? 'Original analysis values — preserved, not the current adjusted recommendation.' : 'Current deterministic decision values.'), el('p', 'identity-line', detailsView.identityLine(id)), el('p', 'raw-rank', detailsView.rawRank(id)), detailsView.familyConfigurations(id)];
+  const children = [title, el('p', 'field-help', original ? 'Original analysis values — preserved, not the current adjusted recommendation.' : 'Current deterministic decision values.'), el('p', 'identity-line', detailsView.identityLine(id)), el('p', 'raw-rank', detailsView.rawRank(id))];
   if (providerName(c)) children.push(el('p', 'provider-name', providerName(c)));
   const statuses = el('div', 'drawer-status'); statuses.append(statusBadge(c), badge(pretty(c.eligibility), c.eligibility === 'eligible' ? 'good' : 'warning')); children.push(statuses);
   const scores = el('div', 'drawer-scores');

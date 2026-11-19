@@ -156,14 +156,15 @@ It returns the original analysis ID, the existing engine's decision, `research_r
 Successful Decision results include additive `selection`, `selector`, `writer_status`,
 `report_basis`, and `report_fallback` fields. Original `decision`, complete raw rankings,
 evidence and scores are preserved. `selection` contains `selection_id`, snapshot fingerprint,
-mapping/policy versions, coverage counts, recommendation slots and separate unscored
-Potential Alternatives. Slot order is `best_overall`, `lower_cost_alternative`,
-`different_family`: zero to three slots may be selected. Role order is not Raw Ranking
-order. Missing slots carry reasons. Family grouping is curated AA-label evidence, not
-verified underlying model equivalence; new snapshots do not inherit older audited groups.
+identity/policy versions, coverage counts, recommendation slots and separate unscored
+Potential Alternatives. Only `best_overall` can be selected (zero or one candidate).
+The historical `lower_cost_alternative` and `different_family` keys remain solely for
+response-shape compatibility: both are always `status=unavailable`,
+`reason_code=recommendation_role_retired`, `candidate=null`. No secondary recommendation
+or grouping is inferred. Best Overall retains its original rank and score.
 
-`selector.status` is `available`, `limited_metadata`, or `unavailable`. Unmapped families
-remain unknown. Metadata/coverage/Selector errors preserve Decision and return a sanitized
+`selector.status` is `available` or `unavailable`.
+Metadata/coverage/Selector errors preserve Decision and return a sanitized
 category and phase under `selector.error`. Selector is local deterministic processing,
 not an Agent stage or additional provider call. If unavailable, `selection=null`, Writer
 is `skipped`, and the report is explicitly a deterministic fallback. Real Writer rejection
@@ -178,8 +179,7 @@ is required. Potential Alternatives are excluded from Writer candidates and keep
 Recalculation returns existing fields plus updated `selection`/`selector`,
 `writer_selection_id`, and `writer_narrative_available` (an accepted original Writer output
 exists). Decision and Selector reuse privately frozen prepared evidence, exact snapshot
-pages, identity sidecar, family mapping and version identities. There is no AA/Gemini call
-or current mapping reload. `writer_explanation_stale` is true if alpha or selection identity
+pages, identity sidecar and policy versions. There is no AA/Gemini call. `writer_explanation_stale` is true if alpha or selection identity
 changes, or selection is unavailable; a weight-source change can change identity too.
 Original analysis/narrative remains immutable. Missing or incompatible context reports
 Selector-unavailable while preserving recalculated raw Decision. Existing retention/size
@@ -349,16 +349,13 @@ logs may retain URLs even when application diagnostics omit request bodies.
 
 An additive `model_identity` projection accompanies successful Selector results and
 recalculation responses. It copies the validated, frozen sidecar binding and exact model
-identities, creator fields, reviewed configuration labels and family statuses. Its `families`
-map contains existing curated family labels and explicit `model_ids` in exact-ID order.
-This is a read-only presentation projection, not a new family grouping or selection policy.
-The projection does not contain snapshot pages, credentials, prompts or benchmark scores.
-It is excluded from canonical selection hashing and Writer input; numeric evidence stays
-in the original Decision. Selector failure returns `model_identity: null`.
+identities, original names/slugs, release dates, creator fields and unknown provider status.
+No grouping metadata is produced or used. The projection does not contain snapshot pages,
+credentials, prompts or benchmark scores. Numeric evidence stays in the original Decision.
+Selector failure returns `model_identity: null`.
 
-The UI checks snapshot, retrieval, data-mode and mapping compatibility before using these
-identities. Missing/incompatible metadata stays unknown. Family expansion reads explicit
-server membership; JavaScript does not normalize names or infer grouping. Potential
+The UI checks snapshot content, retrieval and data-mode compatibility before using these
+identities. Missing/incompatible metadata stays unknown. Potential
 Alternatives render the existing U-only/G-only and eligibility buckets, initially two per
 bucket with expansion only to returned entries. Backend omissions remain disclosed; there
 is no hidden re-fetch. Current and original Raw Rankings keep server ordering and scores.

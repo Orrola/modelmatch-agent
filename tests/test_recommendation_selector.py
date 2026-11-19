@@ -1,4 +1,4 @@
-"""Deterministic role selection using synthetic evidence and audited test groups."""
+"""Deterministic Best Overall and evidence exploration over exact synthetic identities."""
 
 import json
 import unittest
@@ -16,32 +16,23 @@ from tools.recommendation_selector import select_recommendations
 class SelectorTests(unittest.TestCase):
     def setUp(self):
         self.snapshot = load_mock_snapshot(Path(__file__).parent / "fixtures/phase2a_synthetic.json")
-        # ID, score-producing original G/U, cost, creator, explicitly curated group.
+        # ID, original G/U, cost, creator and the literal configuration label.
         self.specs = [("a", 90, 100, "A", "fa"), ("b", 89, 90, "A", "fa"),
                       ("c", 88, 50, "B", "fb"), ("d", 87, 40, "C", "fc"),
                       ("e", 86, 30, "A", "fd"), ("z", 70, 10, "D", None)]
 
     def inputs(self, *, cost=True, requirements=None, relevance="strong"):
-        rows, records, families = [], [], {}
-        for mid, score, price, creator, family in self.specs:
-            identity = {"name": f"Synthetic {family or 'unknown'} ({mid})", "slug": f"synthetic-{mid}",
+        rows = []
+        for mid, score, price, creator, configuration_label in self.specs:
+            identity = {"name": f"Synthetic {configuration_label or 'unknown'} ({mid})", "slug": f"synthetic-{mid}",
                         "release_date": "2026-11-16", "creator_id": creator, "creator_name": f"Synthetic creator {creator}"}
             rows.append({"id": mid, "name": identity["name"], "slug": identity["slug"],
                 "release_date": identity["release_date"], "model_creator": {"id": creator, "name": identity["creator_name"]},
                 "evaluations": {"artificial_analysis_intelligence_index": score, "artificial_analysis_finance_and_accounting_index": score},
                 "pricing": {"price_1m_input_tokens": price / 2, "price_1m_output_tokens": price / 2},
                 "performance_v3": {"mean_time_to_first_token_seconds": 1, "mean_output_tokens_per_second": 100}})
-            if family:
-                families[family] = {"label": f"Synthetic {family}", "creator_id": creator,
-                    "grouping_confidence": "curated_aa_label", "provider_equivalence_status": "unknown"}
-                records.append({"model_id": mid, "family_id": family, "expected_identity": identity,
-                    "configuration": {"label": mid, "verification_status": "aa_label_only"},
-                    "supporting_evidence": {"snapshot_id": self.snapshot["snapshot_id"], "data_mode": "mock",
-                        "source_url": self.snapshot["source_url"], "retrieved_at": None, "source_model_id": mid,
-                        "source_fields": deepcopy(identity), "basis": "Synthetic manually curated test identity only."}})
         self.snapshot["pages"][0]["data"] = rows
-        mapping = {"version": "synthetic-mapping-v1", "records": records, "families": families}
-        metadata = build_identity_sidecar(self.snapshot, mapping=mapping)
+        metadata = build_identity_sidecar(self.snapshot)
         req = ([OperationalRequirement("monthly_cost_usd")] if cost else []) if requirements is None else requirements
         prepared = build_candidates(self.snapshot, RelevanceDecision("Synthetic task", "finance", relevance,
             "Synthetic task proxy only."), req, workload=Workload(1, 1000000, 1000000), shortlist_size=1)
@@ -53,93 +44,32 @@ class SelectorTests(unittest.TestCase):
         candidate = result["slots"][role]["candidate"]
         return candidate["model_id"] if candidate else None
 
-    def test_three_roles_use_exact_scores_distinct_groups_and_do_not_mutate_inputs(self):
+    def test_best_overall_preserves_scores_and_inputs_without_secondary_recommendations(self):
         args = self.inputs()
         before = deepcopy(args)
         result = select_recommendations(*args)
-        self.assertEqual([self.selected_id(result, r) for r in result["slots"]], ["a", "c", "d"])
-        self.assertEqual(args, before)
-        for slot in result["slots"].values():
-            selected = slot["candidate"]
-            original = args[0]["candidates"][selected["model_id"]]
-            for key in ("G", "U", "O", "S", "evidence_ids", "eligibility", "candidate_status"):
-                self.assertEqual(selected[key], original[key])
-        self.assertEqual(len({s["candidate"]["family_id"] for s in result["slots"].values()}), 3)
-        self.assertEqual(result["coverage"]["total_candidate_entries"], 6)
-        self.assertEqual(result["coverage"]["available_slots"], 3)
-        self.assertEqual(result["slots"]["lower_cost_alternative"]["candidate"]["raw_rank"], 3)
-
-    def test_unknown_best_family_preserves_overall_and_blocks_unproven_diversity(self):
-        self.specs[0] = ("a", 90, 100, "A", None)
-        result = select_recommendations(*self.inputs())
         self.assertEqual(self.selected_id(result, "best_overall"), "a")
+        self.assertEqual(args, before)
+        original = args[0]["candidates"]["a"]
+        for key in ("G", "U", "O", "S", "evidence_ids", "eligibility", "candidate_status"):
+            self.assertEqual(result["slots"]["best_overall"]["candidate"][key], original[key])
+        self.assertEqual(result["coverage"]["total_candidate_entries"], 6)
+        self.assertEqual(result["coverage"]["available_slots"], 1)
         for role in ("lower_cost_alternative", "different_family"):
-            self.assertEqual(result["slots"][role]["reason_code"], "best_overall_family_unknown")
+            self.assertEqual(result["slots"][role], {"status": "unavailable", "reason_code": "recommendation_role_retired", "details": {}, "candidate": None})
 
-    def test_other_creator_is_preferred_even_when_same_creator_family_has_higher_s(self):
-        self.specs = [("a", 90, 100, "A", "fa"), ("b", 89, 90, "A", "fb"), ("c", 70, 30, "B", "fc")]
-        result = select_recommendations(*self.inputs(cost=False))
-        self.assertEqual(self.selected_id(result, "different_family"), "c")
-        self.assertEqual(result["slots"]["different_family"]["candidate"]["S"], 70)
-
-    def test_verified_different_family_same_creator_is_a_labeled_fallback(self):
-        self.specs = [("a", 90, 100, "A", "fa"), ("b", 89, 90, "A", "fb")]
-        result = select_recommendations(*self.inputs(cost=False))
-        self.assertEqual(self.selected_id(result, "different_family"), "b")
-        self.assertIn("same_creator_fallback", result["slots"]["different_family"]["reason_code"])
-
-    def test_one_known_family_does_not_silently_deduplicate_unknown_groups(self):
-        self.specs = [("a", 90, 100, "A", "fa"), ("b", 89, 30, "A", "fa"), ("c", 88, 20, "B", None)]
-        result = select_recommendations(*self.inputs())
-        self.assertIsNone(self.selected_id(result, "lower_cost_alternative"))
-        self.assertIsNone(self.selected_id(result, "different_family"))
-        self.assertEqual(result["coverage"]["unknown_family_entries"], 1)
-        self.assertEqual(result["coverage"]["total_candidate_entries"], 3)
-
-    def test_missing_cost_does_not_block_a_defensible_different_family(self):
-        result = select_recommendations(*self.inputs(cost=False))
-        self.assertEqual(result["slots"]["lower_cost_alternative"]["reason_code"], "best_overall_comparable_cost_unavailable")
-        self.assertEqual(self.selected_id(result, "different_family"), "c")
-
-    def test_incompatible_workload_and_currency_cannot_produce_a_cost_alternative(self):
-        for mode in ("workload", "currency"):
-            args = self.inputs()
-            d = args[0]
-            for mid, candidate in d["candidates"].items():
-                if mid == "a":
-                    continue
-                check = next(c for c in candidate["constraint_checks"] if c["metric"] == "monthly_cost_usd")
-                record = d["evidence"][check["evidence_id"]]
-                if mode == "currency":
-                    record["unit"] = "EUR/month"
-                else:
-                    candidate["workload"]["monthly_requests"] = 2
-                    candidate["estimated_monthly_cost_usd"] *= 2
-                    record["value"] *= 2
-            result = select_recommendations(*args)
-            self.assertIsNone(self.selected_id(result, "lower_cost_alternative"))
-
-    def test_pareto_dominance_includes_unknown_families_before_diversity_filtering(self):
-        self.specs[-1] = ("z", 89, 20, "D", None)
-        result = select_recommendations(*self.inputs())
-        self.assertIsNone(self.selected_id(result, "lower_cost_alternative"))
-        self.assertEqual(result["slots"]["lower_cost_alternative"]["reason_code"], "no_distinct_curated_family_on_lower_cost_frontier")
-        self.assertEqual(self.selected_id(result, "different_family"), "c")
-
-    def test_lower_cost_role_chooses_highest_raw_rank_not_cheapest_model(self):
-        result = select_recommendations(*self.inputs())
-        slot = result["slots"]["lower_cost_alternative"]
-        self.assertEqual(slot["candidate"]["model_id"], "c")
-        self.assertEqual(slot["candidate"]["estimated_monthly_cost_usd"], 50)
-        self.assertEqual(slot["details"]["best_overall_cost"], 100)
+    def test_names_creators_and_price_do_not_change_best_overall(self):
+        self.specs = [("a", 90, 100, "A", "same"), ("b", 89, 0, "A", "same"), ("c", 88, 1, "B", "other")]
+        for cost in (True, False):
+            self.assertEqual(self.selected_id(select_recommendations(*self.inputs(cost=cost)), "best_overall"), "a")
 
     def test_exact_ties_keep_original_competition_rank_and_stable_id_order(self):
         self.specs = [("b", 90, 50, "B", "fb"), ("a", 90, 100, "A", "fa"), ("c", 80, 30, "C", "fc")]
         args = self.inputs()
         result = select_recommendations(*args)
         self.assertEqual(self.selected_id(result, "best_overall"), "a")
-        self.assertEqual(result["slots"]["lower_cost_alternative"]["candidate"]["raw_rank"], 1)
-        self.assertEqual(result["slots"]["lower_cost_alternative"]["candidate"]["raw_position"], 2)
+        self.assertEqual(result["slots"]["best_overall"]["candidate"]["raw_rank"], 1)
+        self.assertEqual(result["slots"]["best_overall"]["candidate"]["raw_position"], 1)
         args[0]["candidates"] = dict(reversed(list(args[0]["candidates"].items())))
         self.assertEqual(select_recommendations(*args), result)
         json.dumps(result, allow_nan=False)
@@ -214,17 +144,15 @@ class SelectorTests(unittest.TestCase):
         self.assertEqual(violated["potential_alternatives"]["excluded_counts_partition"]["known_hard_constraint_violation"], 6)
         self.assertTrue(all(bucket["returned"] == 0 for states in violated["potential_alternatives"]["buckets"].values() for bucket in states.values()))
 
-    def test_snapshot_mapping_and_foreign_evidence_mismatch_fail_closed(self):
-        for mode in ("snapshot", "fingerprint", "mapping", "support", "evidence", "rank"):
+    def test_snapshot_identity_and_foreign_evidence_mismatch_fail_closed(self):
+        for mode in ("snapshot", "fingerprint", "identity", "evidence", "rank"):
             d, m, c = self.inputs()
             if mode == "snapshot":
                 m["snapshot_id"] = "other-snapshot"
             elif mode == "fingerprint":
                 c["snapshot_fingerprint"] = "other-content"
-            elif mode == "mapping":
-                c["mapping_version"] = "other-mapping"
-            elif mode == "support":
-                m["models"]["a"]["supporting_evidence"]["snapshot_id"] = "old-snapshot"
+            elif mode == "identity":
+                m["models"]["a"]["original_name"] = "Other exact model"
             elif mode == "evidence":
                 next(iter(d["evidence"].values()))["snapshot_id"] = "old-snapshot"
             else:
@@ -240,11 +168,6 @@ class SelectorTests(unittest.TestCase):
         result = select_recommendations(*args, potential_limit_per_bucket=0)
         self.assertEqual(result["potential_alternatives"]["buckets"]["U_only"]["eligible"]["omitted"], 1)
 
-    def test_same_family_id_cannot_merge_independent_creator_identities(self):
-        d, m, c = self.inputs()
-        m["models"]["c"]["family_id"] = m["models"]["a"]["family_id"]
-        with self.assertRaises(ValueError):
-            select_recommendations(d, m, c)
 
     def test_equal_numeric_values_do_not_permit_cross_model_index_evidence(self):
         self.specs[1] = ("b", 90, 90, "A", "fa")
@@ -252,8 +175,3 @@ class SelectorTests(unittest.TestCase):
         c["models"]["a"]["G"]["evidence_ids"] = c["models"]["b"]["G"]["evidence_ids"]
         with self.assertRaises(ValueError):
             select_recommendations(d, m, c)
-
-    def test_free_best_cost_cannot_have_a_strictly_lower_nonnegative_alternative(self):
-        self.specs[0] = ("a", 90, 0, "A", "fa")
-        result = select_recommendations(*self.inputs())
-        self.assertEqual(result["slots"]["lower_cost_alternative"]["reason_code"], "no_strictly_lower_comparable_cost")

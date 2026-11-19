@@ -8,7 +8,7 @@ from tools.decision import _validate_prepared
 from tools.model_evidence import DOMAIN_INDICES
 from tools.model_metadata import snapshot_binding
 
-COVERAGE_VERSION = "evidence-coverage-v1"
+COVERAGE_VERSION = "evidence-coverage-v2"
 
 
 def _validate_inputs(snapshot, prepared, metadata, decision):
@@ -48,7 +48,7 @@ def _validate_inputs(snapshot, prepared, metadata, decision):
         if (meta["model_id"] != model_id or meta["snapshot_id"] != binding["snapshot_id"]
                 or meta["original_name"] != row.get("name") or meta["original_slug"] != row.get("slug")
                 or meta["release_date"] != row.get("release_date") or meta["creator_id"] != creator.get("id")
-                or meta["creator_name"] != creator.get("name") or meta["mapping_version"] != metadata["mapping_version"]):
+                or meta["creator_name"] != creator.get("name")):
             raise ValueError("Identity metadata exact-ID join is invalid.")
         for key in ("model_id", "name", "G", "U", "eligibility", "candidate_status", "evidence_ids"):
             if result[key] != candidate[key]:
@@ -90,7 +90,7 @@ def analyze_evidence_coverage(snapshot, prepared, metadata, decision):
         official_verified = [e for e in official if e["evidence_status"] == "observed"
                              and e.get("verification_status") == "verified"]
         verification = {"benchmark_evidence": "synthetic_fixture" if binding["data_mode"] == "mock" else "aa_observed_only",
-            "family": metadata["models"][model_id]["family_status"], "provider": "unknown",
+            "provider": "unknown",
             "official_specifications": "not_requested" if not official else "verified" if len(official_verified) == len(official)
                 and binding["data_mode"] == "live" else "unknown",
             "official_evidence_ids": [e["evidence_id"] for e in official]}
@@ -108,14 +108,14 @@ def analyze_evidence_coverage(snapshot, prepared, metadata, decision):
         if not complete:
             alternatives[candidate["eligibility"]].append({"model_id": model_id,
                 "snapshot_id": binding["snapshot_id"], "name": metadata["models"][model_id]["original_name"],
-                "family_id": metadata["models"][model_id]["family_id"], "G_available": g["available"],
+                "G_available": g["available"],
                 "U_available": u["available"], "scoring_evidence_complete": False,
                 "eligibility": candidate["eligibility"], "candidate_status": candidate["candidate_status"],
                 "verification": deepcopy(verification), "missing_evidence_reasons": deepcopy(reasons),
                 "evidence_ids": list(candidate["evidence_ids"]), "score_blockers": list(candidate["score_blockers"]),
                 "S": None, "representation_status": "unranked_incomplete_evidence_not_a_recommendation"})
     return {"coverage_version": COVERAGE_VERSION, "metadata_version": metadata["metadata_version"],
-        "mapping_version": metadata["mapping_version"], **binding, "relevance": deepcopy(prepared["relevance"]),
+        **binding, "relevance": deepcopy(prepared["relevance"]),
         "models": models, "counts": {"total": len(models),
             "G_available": sum(e["G"]["available"] for e in models.values()),
             "U_available": sum(e["U"]["available"] for e in models.values()),

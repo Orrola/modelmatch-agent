@@ -9,104 +9,38 @@ from pathlib import Path
 from tools.artificial_analysis import load_mock_snapshot
 from tools.decision import decide
 from tools.evidence_coverage import analyze_evidence_coverage
-from tools.family_mapping import LEGACY_MAPPING_VERSION, load_family_mapping
 from tools.model_evidence import OperationalRequirement, RelevanceDecision, build_candidates
 from tools.model_metadata import build_identity_sidecar
 
 FIXTURE = Path(__file__).parent / "fixtures/phase2a_synthetic.json"
 
 
-def synthetic_mapping(snapshot):
-    row = snapshot["pages"][0]["data"][0]
-    identity = {"name": row["name"], "slug": row.get("slug"), "release_date": row.get("release_date"),
-                "creator_id": row["model_creator"]["id"], "creator_name": row["model_creator"].get("name")}
-    return {"version": "synthetic-curation-v1", "families": {"synthetic:family-v1": {
-        "label": "Synthetic family", "creator_id": identity["creator_id"],
-        "grouping_confidence": "curated_aa_label", "provider_equivalence_status": "unknown"}},
-        "records": [{"model_id": row["id"], "family_id": "synthetic:family-v1", "expected_identity": identity,
-            "configuration": {"label": "Synthetic configuration", "verification_status": "aa_label_only"},
-            "supporting_evidence": {"snapshot_id": snapshot["snapshot_id"], "data_mode": snapshot["data_mode"],
-                "retrieved_at": snapshot["retrieved_at"], "source_url": snapshot["source_url"],
-                "source_model_id": row["id"], "source_fields": deepcopy(identity),
-                "basis": "Synthetic manually curated label assertion for offline testing only."}}]}
-
-
 class MetadataTests(unittest.TestCase):
     def setUp(self):
         self.snapshot = load_mock_snapshot(FIXTURE)
-        self.mapping = synthetic_mapping(self.snapshot)
 
-    def test_exact_id_join_preserves_all_rows_and_identity_fields_without_provider_guessing(self):
+    def test_exact_id_join_preserves_all_source_fields_without_guessing(self):
         original = deepcopy(self.snapshot)
-        result = build_identity_sidecar(self.snapshot, mapping=self.mapping)
-        rows = self.snapshot["pages"][0]["data"]
-        self.assertEqual(set(result["models"]), {r["id"] for r in rows})
-        self.assertEqual(result["mapping_version"], self.mapping["version"])
-        for row in rows:
+        result = build_identity_sidecar(self.snapshot)
+        for row in self.snapshot["pages"][0]["data"]:
             meta = result["models"][row["id"]]
             self.assertEqual(meta["original_name"], row["name"])
+            self.assertEqual(meta["original_slug"], row.get("slug"))
+            self.assertEqual(meta["release_date"], row.get("release_date"))
             self.assertEqual(meta["creator_id"], row["model_creator"]["id"])
             self.assertIsNone(meta["provider"])
-            self.assertEqual(meta["identity_status"], "synthetic_fixture")
         self.assertEqual(self.snapshot, original)
         self.snapshot["pages"][0]["data"].reverse()
-        self.assertEqual(build_identity_sidecar(self.snapshot, mapping=self.mapping)["models"], result["models"])
+        self.assertEqual(build_identity_sidecar(self.snapshot)["models"], result["models"])
 
-    def test_seed_mapping_is_versioned_and_supports_only_label_level_claims(self):
-        mapping = load_family_mapping(version=LEGACY_MAPPING_VERSION)
-        self.assertEqual(mapping["version"], LEGACY_MAPPING_VERSION)
-        self.assertEqual(len(mapping["records"]), 5)
-        self.assertEqual(len({r["model_id"] for r in mapping["records"]}), 5)
-        for record in mapping["records"]:
-            self.assertEqual(record["supporting_evidence"]["source_model_id"], record["model_id"])
-            self.assertEqual(record["supporting_evidence"]["snapshot_id"], "eec442cab98cf613")
-            self.assertEqual(record["supporting_evidence"]["source_fields"], record["expected_identity"])
-        self.assertEqual(next(iter(mapping["families"].values()))["provider_equivalence_status"], "unknown")
-        mapping["records"].clear()
-        self.assertEqual(len(load_family_mapping(version=LEGACY_MAPPING_VERSION)["records"]), 5)
-
-    def test_curated_family_and_configuration_are_separate_from_official_verification(self):
-        result = build_identity_sidecar(self.snapshot, mapping=self.mapping)
-        first = result["models"][self.mapping["records"][0]["model_id"]]
-        self.assertEqual(first["family_status"], "curated_aa_label")
-        self.assertEqual(first["family_id"], "synthetic:family-v1")
-        self.assertEqual(first["family"]["provider_equivalence_status"], "unknown")
-        self.assertEqual(first["configuration"]["verification_status"], "aa_label_only")
-        self.assertEqual(first["supporting_evidence"]["snapshot_id"], self.snapshot["snapshot_id"])
-
-    def test_same_name_stem_never_automatically_merges_unknown_families(self):
+    def test_similar_names_never_merge_exact_ids(self):
         rows = self.snapshot["pages"][0]["data"]
-        rows[1]["name"], rows[2]["name"] = "Synthetic Family (High)", "Synthetic Family (Low)"
-        rows[2]["model_creator"] = deepcopy(rows[1]["model_creator"])
+        rows[1]["name"] = rows[2]["name"] = "Synthetic model configuration"
         result = build_identity_sidecar(self.snapshot)
-        for row in rows[1:3]:
-            self.assertIsNone(result["models"][row["id"]]["family_id"])
-            self.assertIsNone(result["models"][row["id"]]["configuration"])
-            self.assertEqual(result["models"][row["id"]]["family_status"], "unknown_unmapped")
-
-    def test_stale_identity_or_snapshot_never_reuses_curated_evidence(self):
-        model_id = self.mapping["records"][0]["model_id"]
-        self.snapshot["pages"][0]["data"][0]["name"] += " New Version"
-        result = build_identity_sidecar(self.snapshot, mapping=self.mapping)
-        self.assertEqual(result["models"][model_id]["family_status"], "unknown_identity_mismatch")
-        self.snapshot["snapshot_id"] = "synthetic-new-snapshot"
-        result = build_identity_sidecar(self.snapshot, mapping=self.mapping)
-        self.assertEqual(result["models"][model_id]["family_status"], "unknown_mapping_snapshot_mismatch")
-        self.assertIsNone(result["models"][model_id]["supporting_evidence"])
-
-    def test_conflicting_mapping_cross_creator_merge_and_missing_support_fail(self):
-        for mode in ("duplicate", "creator", "source", "version"):
-            mapping = deepcopy(self.mapping)
-            if mode == "duplicate":
-                mapping["records"].append(deepcopy(mapping["records"][0]))
-            elif mode == "creator":
-                mapping["families"]["synthetic:family-v1"]["creator_id"] = "other-creator"
-            elif mode == "source":
-                mapping["records"][0]["supporting_evidence"]["source_fields"]["name"] = "Other model"
-            else:
-                mapping["version"] = ""
-            with self.subTest(mode=mode), self.assertRaises(ValueError):
-                build_identity_sidecar(self.snapshot, mapping=mapping)
+        self.assertEqual(len(result["models"]), len(rows))
+        self.assertNotEqual(result["models"][rows[1]["id"]]["model_id"], result["models"][rows[2]["id"]]["model_id"])
+        self.assertNotIn("families", result)
+        self.assertNotIn("mapping_version", result)
 
     def test_duplicate_snapshot_ids_fail_closed(self):
         rows = self.snapshot["pages"][0]["data"]
@@ -179,7 +113,6 @@ class CoverageTests(unittest.TestCase):
         entry = result["models"]["synthetic-finance"]
         self.assertEqual(entry["decision_S"], decision["candidates"]["synthetic-finance"]["S"])
         self.assertEqual(entry["verification"]["benchmark_evidence"], "synthetic_fixture")
-        self.assertEqual(entry["verification"]["family"], "unknown_unmapped")
         self.assertEqual(entry["verification"]["official_specifications"], "not_requested")
 
     def test_unsupported_domain_never_substitutes_another_u(self):

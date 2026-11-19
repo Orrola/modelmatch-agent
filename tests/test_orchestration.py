@@ -117,7 +117,7 @@ class OrchestrationTests(unittest.IsolatedAsyncioTestCase):
     async def test_partial_domain_stays_provisional(self):
         result = await self.workflow(ScriptedModel(match_status="partial")).run(USER_INPUT)
         self.assertEqual(result["status"], "provisional")
-        self.assertIn("Provisional shortlist", result["markdown"])
+        self.assertIn("Provisional Best Overall", result["markdown"])
 
     async def test_unclear_request_clarifies_before_data_access(self):
         plan = default_plan().model_copy(update={"task_description": "Best LLM", "task_quote": "Best LLM"})
@@ -241,7 +241,7 @@ class OrchestrationTests(unittest.IsolatedAsyncioTestCase):
         result = await self.workflow(ScriptedModel(writer_tamper=True)).run(USER_INPUT)
         self.assertTrue(result["writer_fallback"])
         self.assertNotIn("invented-model", result["markdown"])
-        self.assertIn("Top candidates", result["markdown"])
+        self.assertIn("Best Overall", result["markdown"])
 
     async def test_skipping_data_tool_does_not_create_evidence(self):
         result = await self.workflow(ScriptedModel(skip_data=True)).run(USER_INPUT)

@@ -106,7 +106,7 @@ def main():
                     f"document.querySelectorAll('#ranking>article[data-role=best_overall]').length==={count} && "
                     f"document.querySelectorAll('#ranking>.recommendation-empty').length==={1 - count}"))
                 check(f"{name}: evaluation coverage title and three primary metrics", browser.evaluate("document.getElementById('recommendation-coverage').querySelector('h2').textContent==='Model Evaluation Coverage' && document.querySelectorAll('.coverage-primary>div').length===3 && !document.querySelector('.coverage-secondary').open"))
-                check(f"{name}: no empty family expander", browser.evaluate("Array.from(document.querySelectorAll('.family-configurations summary')).every(e=>!e.textContent.includes('(0)'))"))
+                check(f"{name}: no removed grouping warning", browser.evaluate("!document.getElementById('results').textContent.toLowerCase().includes('family')"))
                 check(f"{name}: no expanded empty status panels", browser.evaluate("Array.from(document.querySelectorAll('.empty-alternative-buckets')).every(e=>!e.open)"))
                 check(f"{name}: generic caveat is not repeated on cards", browser.evaluate("document.querySelectorAll('#ranking .rationale').length===0"))
                 if name == "states":
@@ -127,11 +127,9 @@ def main():
             check("Operational highlights use observed values", browser.evaluate("document.querySelectorAll('#ranking .best-highlights>span').length===3 && document.querySelector('#ranking .best-highlights').textContent.includes('Mean TTFT: 1 s')"))
             browser.click("#ranking .card-evidence-details>summary")
             check("Evidence details expands exact IDs", browser.evaluate("document.querySelector('#ranking .card-evidence-details').open && document.querySelector('#ranking .card-evidence-details').textContent.includes('AA ID: a')"))
-            browser.click("#ranking .family-configurations summary")
-            check("Explicit other configuration expands", browser.evaluate("document.querySelector('.family-configurations').open && document.querySelector('.configuration-row').textContent.includes('(b)')"))
             browser.click("#raw-ranking .raw-ranking-group summary")
             browser.click("#raw-ranking .raw-ranking-row:nth-of-type(3) .model-title")
-            check("No empty family expander in model drawer", browser.evaluate("document.getElementById('model-drawer').open && document.querySelector('#drawer-content .technical-panel pre').textContent.includes('\"aa_model_id\": \"c\"') && document.querySelectorAll('#drawer-content .family-configurations').length===0"))
+            check("Exact model identity remains in drawer", browser.evaluate("document.getElementById('model-drawer').open && document.querySelector('#drawer-content .technical-panel pre').textContent.includes('\"aa_model_id\": \"c\"')"))
             browser.click("#close-drawer")
             browser.click("#ranking .card-actions .text-button")
             check("Model detail action opens Best Overall", browser.evaluate("document.getElementById('model-drawer').open && document.querySelector('#drawer-content .technical-panel pre').textContent.includes('\"aa_model_id\": \"a\"')"))

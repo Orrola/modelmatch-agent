@@ -30,7 +30,7 @@ def writer_payload(decision, selection=_LEGACY_SELECTION):
         status = "provisional" if ranking else "not_supported"
     if not decision["catalog_complete"] and ranking:
         status = "provisional"
-    ids = [r["model_id"] for r in ranking[:3]]
+    ids = [r["model_id"] for r in ranking[:1]]
     roles = []
     basis = "legacy_raw_ranking"
     if selection is not _LEGACY_SELECTION:
@@ -52,6 +52,8 @@ def writer_payload(decision, selection=_LEGACY_SELECTION):
                     continue
                 if slot["status"] != "selected":
                     raise ValueError("Canonical recommendation slot status is invalid.")
+                if role != "best_overall":
+                    raise ValueError("A retired recommendation role cannot contain a candidate.")
                 supplied = slot["candidate"]
                 candidate = decision["candidates"].get(supplied["model_id"])
                 if (candidate is None or candidate["eligibility"] != "eligible" or candidate["S"] is None
@@ -110,9 +112,9 @@ def render_recommendation(decision, intent: WriterOutput, selection=_LEGACY_SELE
                   "The original Decision, raw rankings and evidence remain available in the API result. No Writer generation was performed.", ""]
     elif payload["recommendation_basis"] == "canonical_selection":
         lines += [f"Canonical selection: `{payload['selection_id']}`. Roles are not Raw Ranking positions.",
-                  "Family comparison uses snapshot-bound curated AA labels, not verified underlying model equivalence.", ""]
+                  "Only Best Overall is recommended; other scored candidates remain available in Raw Ranking.", ""]
     if intent.candidate_ids:
-        lines += ["## " + ("Provisional shortlist" if payload["status"] == "provisional" else "Top candidates (up to three)"), "",
+        lines += ["## " + ("Provisional Best Overall" if payload["status"] == "provisional" else "Best Overall"), "",
                   "G and U are original index points. O and S are custom policy points, not accuracy percentages or an official AA benchmark.", "",
                   "| Model | G | U | O | S | Candidate status | Eligibility |", "|---|---:|---:|---:|---:|---|---|"]
         for mid in intent.candidate_ids:
@@ -145,7 +147,7 @@ def render_recommendation(decision, intent: WriterOutput, selection=_LEGACY_SELE
     if payload["recommendation_basis"] == "canonical_selection":
         lines += ["- Potential Alternatives remain separate, unranked and unscored; they are not Writer recommendation candidates."]
         lines += [f"- Unavailable {role}: {selection['slots'][role]['reason_code']}." for role in ROLE_ORDER
-                  if selection["slots"][role]["status"] == "unavailable"]
+                  if role == "best_overall" and selection["slots"][role]["status"] == "unavailable"]
     lines += ["", "## Weight sensitivity", "",
               "The same evidence and penalties were reused at alpha values: " + ", ".join(str(s["alpha"]) for s in decision["sensitivity"]) + ". Full rank changes are returned in the structured decision.",
               "", "## Next validation steps", ""]

@@ -82,13 +82,13 @@ assert(state.stages.get('review')==='failed' && state.stages.get('decision')==='
 const ranked=fixture.decision.rankings.fully_evaluable.length ? fixture.decision.rankings.fully_evaluable : fixture.decision.rankings.provisional;
 const bestId=ranked[0].model_id;
 const otherId=Object.keys(fixture.decision.candidates).find(id=>id!==bestId);
-const canonical={slots:{best_overall:{status:'selected',candidate:{model_id:bestId}},lower_cost_alternative:{status:'unavailable',candidate:null},different_family:{status:'selected',candidate:{model_id:otherId}}}};
-assert(bestOverallCandidate(fixture.decision,canonical,{status:'limited_metadata'}).model_id===bestId,'Only canonical Best Overall is used');
+const canonical={slots:{best_overall:{status:'selected',candidate:{model_id:bestId}},lower_cost_alternative:{status:'unavailable',candidate:null},different_family:{status:'unavailable',candidate:null,reason_code:'recommendation_role_retired'}}};
+assert(bestOverallCandidate(fixture.decision,canonical,{status:'available'}).model_id===bestId,'Only canonical Best Overall is used');
 assert(bestOverallCandidate(fixture.decision,null,{status:'unavailable'})===null,'Unavailable selection never falls back to Raw Ranking');
 state.stages=new Map();
 finishProgress({writer_status:'skipped',writer_fallback:false,selector:{status:'unavailable'}});
 assert(state.stages.get('writer')==='skipped','A skipped Writer is not accepted merely because writer_fallback is false');
-const acceptedWriter={...fixture,writer_status:'accepted',selection:canonical,selector:{status:'limited_metadata'}};
+const acceptedWriter={...fixture,writer_status:'accepted',selection:canonical,selector:{status:'available'}};
 state.original=acceptedWriter;renderOriginalSummary();
 assert(document.getElementById('report').children[0].textContent.includes(fixture.decision.candidates[bestId].name) && !document.getElementById('report').children[0].textContent.includes(fixture.decision.candidates[otherId].name),'The original summary only displays Best Overall');
 state.original={...fixture,writer_status:'skipped',selection:null,selector:{status:'unavailable'}};

@@ -4,7 +4,7 @@
   <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="theme-color" content="#0f766e">
   <title>ModelMatch AI — Model selection workspace</title>
-  <link rel="stylesheet" href="/modelmatch.css?v=compact-best-1">
+  <link rel="stylesheet" href="/modelmatch.css?v=best-only-v2">
 </head>
 <body>
 <a class="skip-link" href="#main">Skip to content</a>
@@ -67,7 +67,7 @@
             <div id="ranking"></div>
           </section>
           <section id="potential-alternatives" class="panel alternatives-panel" aria-label="Potential alternatives with limited evidence"></section>
-          <section class="panel raw-ranking-panel" aria-labelledby="raw-ranking-title"><div class="results-heading"><div><h2 id="raw-ranking-title">All models &amp; Raw Ranking</h2><p>Original engine order, without family deduplication or recommendation-role ordering.</p></div><label for="ranking-scope">Ranking weights <select id="ranking-scope"><option value="current">Current weights</option><option value="original">Original analysis</option></select></label></div><div id="raw-ranking"></div></section>
+          <section class="panel raw-ranking-panel" aria-labelledby="raw-ranking-title"><div class="results-heading"><div><h2 id="raw-ranking-title">All models &amp; Raw Ranking</h2><p>Original engine order and scores, with every eligible model retained.</p></div><label for="ranking-scope">Ranking weights <select id="ranking-scope"><option value="current">Current weights</option><option value="original">Original analysis</option></select></label></div><div id="raw-ranking"></div></section>
           <section class="candidate-section"><div class="results-heading"><div><h2>Candidate catalog</h2><p id="counts"></p></div></div><div id="candidate-groups"></div></section>
           <section id="compare-panel" class="panel side-by-side" hidden aria-labelledby="compare-title"><div class="results-heading"><div><p class="eyebrow">SIDE BY SIDE</p><h2 id="compare-title">Your selected models</h2></div><button id="clear-comparison" class="text-button" type="button">Clear selection</button></div><div id="comparison-table" class="table-scroll"></div><p class="field-help">Selection is for inspection. Unverified or ineligible models are not recommendations.</p></section>
           <p class="policy-footnote">G and U are original AA index points. S is a ModelMatch decision score, not an official AA benchmark. Task default weights are provisional product policy. <button class="inline-button" type="button" data-view="evidence">Inspect the evidence →</button></p>
@@ -92,7 +92,7 @@
 <div id="compare-bar" class="compare-bar" hidden><span><strong id="selected-count">0</strong> of 3 models selected</span><button id="show-comparison" class="button button-primary button-small" type="button" disabled>Compare models ↔</button><button id="clear-selection" class="text-button" type="button">Clear</button></div>
 <dialog id="model-drawer" class="model-drawer" aria-labelledby="drawer-title"><div class="drawer-header"><span class="eyebrow">MODEL DETAILS</span><button id="close-drawer" class="icon-button" type="button" aria-label="Close model details">×</button></div><div id="drawer-content"></div></dialog>
 <div id="announcement" class="sr-only" role="status" aria-live="polite"></div>
-<script src="/recommendation-views.js?v=compact-best-1"></script>
-<script type="module" src="/modelmatch.js?v=compact-best-1"></script>
+<script src="/recommendation-views.js?v=best-only-v2"></script>
+<script type="module" src="/modelmatch.js?v=best-only-v2"></script>
 </body>
 </html>

@@ -34,7 +34,7 @@ def presentation_fixtures():
         ("one", {"specs": [("a", 90, 100, "A", None)]}),
         ("zero", {"requirements": [OperationalRequirement("context_window", 100000, hard=True)]}),
         ("states", {"requirements": [OperationalRequirement("input_price", 30, hard=True)]})):
-        _, _, _, snapshot, _, mapping = synthetic_inputs(**{k: v for k, v in options.items() if k not in ("user_alpha", "match_status")})
+        _, _, _, snapshot, _ = synthetic_inputs(**{k: v for k, v in options.items() if k not in ("user_alpha", "match_status")})
         if key in ("three", "zero", "states"):
             template = deepcopy(snapshot["pages"][0]["data"][-1])
             for i in range(12):
@@ -49,7 +49,7 @@ def presentation_fixtures():
             row = next(row for row in snapshot["pages"][0]["data"] if row["id"] == "d")
             row["evaluations"]["artificial_analysis_intelligence_index"] = 97
             row["evaluations"]["artificial_analysis_finance_and_accounting_index"] = 78
-        metadata = build_identity_sidecar(snapshot, mapping=mapping)
+        metadata = build_identity_sidecar(snapshot)
         requirements = options.get("requirements", [OperationalRequirement("monthly_cost_usd")] if options.get("cost", True) else [])
         prepared = build_candidates(snapshot, RelevanceDecision("Synthetic UI test", "finance", options.get("match_status", "strong"), "Synthetic fixture proxy only."),
             requirements, workload=Workload(1, 1000000, 1000000), shortlist_size=6)
@@ -57,7 +57,7 @@ def presentation_fixtures():
         coverage = analyze_evidence_coverage(snapshot, prepared, metadata, decision)
         selection = select_recommendations(decision, metadata, coverage)
         result[key] = {"decision": decision, "selection": selection, "model_identity": identity_presentation(metadata),
-            "selector": {"status": "limited_metadata"}, "writer_status": "accepted", "writer_fallback": False,
+            "selector": {"status": "available"}, "writer_status": "accepted", "writer_fallback": False,
             "status": ("provisional" if selection["comparison_cohort"] == "provisional" else "supported") if selection["coverage"]["available_slots"] else "not_supported", "trace": [], "tool_calls": [],
             "markdown": "Synthetic original report. Not real AA evaluations."}
         if key == "three":
@@ -72,10 +72,7 @@ def presentation_fixtures():
         "selector": {"status": "unavailable"}, "writer_status": "skipped", "report_fallback": True}
     result["legacy"] = {key: value for key, value in result["three"].items() if key not in ("selection", "model_identity", "selector")}
     result["mismatch"] = deepcopy(result["three"])
-    for meta in result["mismatch"]["model_identity"]["models"].values():
-        meta["family_status"] = "unknown_mapping_snapshot_mismatch"
-        meta["family_id"] = None
-    result["mismatch"]["model_identity"]["families"] = {}
+    result["mismatch"]["model_identity"]["snapshot_fingerprint"] = "different-snapshot-content"
     return result
 
 
@@ -85,19 +82,17 @@ class IdentityPresentationTests(unittest.TestCase):
         before = deepcopy(metadata)
         projection = identity_presentation(metadata)
         self.assertEqual(set(projection["models"]), set(metadata["models"]))
-        self.assertEqual(projection["mapping_version"], metadata["mapping_version"])
         self.assertEqual(projection["snapshot_fingerprint"], metadata["snapshot_fingerprint"])
-        self.assertEqual(projection["families"]["fa"]["model_ids"], ["a", "b"])
-        self.assertIsNone(projection["models"]["z"]["family_id"])
+        self.assertNotIn("families", projection)
         self.assertIsNone(projection["models"]["a"]["provider"])
         self.assertNotIn("pages", projection)
         self.assertNotIn("evidence", projection)
-        projection["models"]["a"]["configuration"].clear()
+        projection["models"]["a"]["original_name"] = "Changed copy"
         self.assertEqual(metadata, before)
 
     def test_all_fixture_recommendations_and_alternatives_keep_real_contracts(self):
         fixtures = presentation_fixtures()
-        for key, count in (("one", 1), ("two", 2), ("three", 3), ("zero", 0)):
+        for key, count in (("one", 1), ("two", 1), ("three", 1), ("zero", 0)):
             self.assertEqual(fixtures[key]["selection"]["coverage"]["available_slots"], count)
         for fixture in fixtures.values():
             selection = fixture.get("selection")

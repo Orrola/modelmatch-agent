@@ -4,8 +4,8 @@ globalThis.ModelMatchRecommendations = {
     const {state, el, text, button, badge, number, pretty, modelTitle, statusBadge, selectionControl,
       missingFor, evidenceFor, metricLabel, reasonLabel, renderCard} = api;
     function identity(decision = state.decision, source = state.modelIdentity, selection = state.selection) {
-      if (!source || !source.models || !source.families || !decision || source.retrieved_at !== decision.retrieved_at || source.snapshot_id !== decision.snapshot_id || source.data_mode !== decision.data_mode
-          || (selection && (source.snapshot_fingerprint !== selection.snapshot_fingerprint || source.mapping_version !== selection.mapping_version))) return null;
+      if (!source || !source.models || !decision || source.retrieved_at !== decision.retrieved_at || source.snapshot_id !== decision.snapshot_id || source.data_mode !== decision.data_mode
+          || (selection && (source.snapshot_fingerprint !== selection.snapshot_fingerprint))) return null;
       return source;
     }
     function metadata(id) { return identity()?.models[id] || null; }
@@ -17,32 +17,8 @@ globalThis.ModelMatchRecommendations = {
       return 'Not numerically ranked';
     }
     function identityLine(id) {
-      const meta = metadata(id), family = meta?.family_id && identity()?.families[meta.family_id];
-      return `${meta?.creator_name ? `Creator: ${meta.creator_name}` : 'Creator unknown'} · ${family ? `Curated family: ${family.label}` : 'Family unknown'}`;
-    }
-    function familyConfigurations(id, hideEmpty = false) {
-      const source = identity(), meta = source?.models[id], family = meta?.family_id && source.families[meta.family_id];
-      const panel = el('details', 'family-configurations');
-      const empty = () => { const node = el('span', 'family-empty'); node.hidden = true; return node; };
-      if (!family || meta.family_status !== 'curated_aa_label') {
-        if (hideEmpty) return empty();
-        return el('p', 'family-availability field-help', meta?.family_status === 'unknown_mapping_snapshot_mismatch'
-          ? 'The audited mapping does not match this snapshot. No family membership is inferred.'
-          : 'No compatible curated membership is available. Similar names are not grouped.');
-      }
-      const ids = family.model_ids.filter(mid => mid !== id);
-      if (!ids.length) return hideEmpty ? empty() : el('p', 'family-availability field-help', 'No other configurations have reviewed membership in this snapshot.');
-      panel.append(el('summary', '', `Other configurations in this curated family (${ids.length})`),
-        el('p', 'field-help', 'Product-label relationship only, not identical weights or deployment. Exact AA ID order; raw ranks are preserved. These entries are for inspection.'));
-      for (const mid of ids) {
-        const candidate = state.decision.candidates[mid];
-        if (!candidate) continue;
-        const row = el('div', 'configuration-row');
-        row.append(modelTitle(candidate), el('p', '', `${rawRank(mid)} · G ${number(candidate.G)} · U ${number(candidate.U)} · S ${number(candidate.S)}`), statusBadge(candidate),
-          el('p', 'field-help', `Eligibility: ${pretty(candidate.eligibility)} · ${missingFor(mid).length} missing fields`));
-        panel.append(row);
-      }
-      return panel;
+      const meta = metadata(id);
+      return meta?.creator_name ? `Creator: ${meta.creator_name}` : 'Creator unknown';
     }
     function operational(candidate) {
       const box = el('div', 'operational-summary'), observed = evidenceFor(candidate).filter(e => e.evidence_status === 'observed');
@@ -115,7 +91,6 @@ globalThis.ModelMatchRecommendations = {
       facts.append(el('summary', '', 'Evidence details'), el('p', 'identity-line', identityLine(candidate.model_id)),
         el('p', 'raw-rank', `${rawRank(candidate.model_id)} · AA ID: ${candidate.model_id}`), operational(candidate));
       if (gaps.length) facts.append(el('p', 'field-help', gaps.map(g => `${metricLabel(g.metric)}: ${reasonLabel(g.reason)}`).join(' · ')));
-      facts.append(familyConfigurations(candidate.model_id, true));
       const actions = el('div', 'card-actions');
       actions.append(button('View model details ↗', () => api.openRawModel(candidate, state.decision, state.modelIdentity)), facts, selectionControl(candidate));
       card.append(actions);
@@ -159,18 +134,16 @@ globalThis.ModelMatchRecommendations = {
       const secondary = el('dl', 'coverage-grid');
       for (const [label, value] of [
         ['G available', c?.G_valid], ['Task-relevant U available', c?.task_relevant_U_valid],
-        ['Curated family entries', c?.verified_family_mappings], ['Family unknown', c?.unknown_family_entries],
         ['Eligible', c?.eligibility?.eligible], ['Hard constraints unverified', c?.eligibility?.unverified], ['Ineligible', c?.eligibility?.ineligible],
       ]) { const cell = el('div'); cell.append(el('dt', '', label), el('dd', '', value ?? 'Unknown')); secondary.append(cell); }
       const breakdown = el('ul', 'score-blocker-breakdown');
       for (const [label, count] of scores.facets) if (count) breakdown.append(el('li', '', `${label}: ${count}`));
       if (!breakdown.children.length) breakdown.append(el('li', '', 'No specific unscored blocker categories reported.'));
       detail.append(secondary, el('h3', '', 'Reported reasons for unscored entries'), breakdown,
-        el('p', 'field-help', 'Counts overlap. Evidence gaps, qualification blockers and family coverage are separate dimensions; do not add them. A candidate can have multiple reported blockers. Curated AA product labels do not establish identical weights or deployment.'));
+        el('p', 'field-help', 'Counts overlap. Evidence gaps and qualification blockers are separate dimensions; do not add them. A candidate can have multiple reported blockers.'));
       const source = identity();
-      detail.append(el('p', 'field-help', source ? `Snapshot ${source.snapshot_id} · Mapping ${source.mapping_version} · Retrieved ${source.retrieved_at || 'unknown'}` : 'Compatible identity metadata is unavailable. No historical family mapping is inferred.'));
+      detail.append(el('p', 'field-help', source ? `Snapshot ${source.snapshot_id} · Retrieved ${source.retrieved_at || 'unknown'}` : 'Compatible snapshot identity metadata is unavailable.'));
       panel.append(detail);
-      if (source && Object.values(source.models).some(m => m.family_status === 'unknown_mapping_snapshot_mismatch')) panel.append(el('p', 'mapping-warning', 'Historical family mappings do not match this snapshot. Affected families remain unknown.'));
     }
     function renderAlternatives() {
       const panel = document.getElementById('potential-alternatives'), potential = state.selection?.potential_alternatives;
@@ -222,7 +195,7 @@ globalThis.ModelMatchRecommendations = {
       const decision = original ? state.original?.decision : state.decision, panel = document.getElementById('raw-ranking');
       panel.replaceChildren(); if (!decision) return;
       const source = original ? state.original.model_identity : state.modelIdentity;
-      panel.append(el('p', 'field-help', `${original ? 'Original analysis' : 'Current'} weights: General ${Math.round(decision.weights.alpha * 100)}%. Raw Ranking keeps backend order and ties; no family deduplication.`));
+      panel.append(el('p', 'field-help', `${original ? 'Original analysis' : 'Current'} weights: General ${Math.round(decision.weights.alpha * 100)}%. Raw Ranking keeps backend order and ties; exact model IDs are retained.`));
       for (const key of ['fully_evaluable', 'provisional']) {
         const rows = decision.rankings[key], block = el('details', 'raw-ranking-group');
         block.append(el('summary', '', `${pretty(key)} Raw Ranking (${rows.length})`));
@@ -240,6 +213,6 @@ globalThis.ModelMatchRecommendations = {
         panel.append(block);
       }
     }
-    return {renderBestOverall, renderCoverage, scoreCoverage, renderAlternatives, renderRawRanking, identityLine, familyConfigurations, rawRank, metadata};
+    return {renderBestOverall, renderCoverage, scoreCoverage, renderAlternatives, renderRawRanking, identityLine, rawRank, metadata};
   },
 };
