@@ -14,17 +14,7 @@ Instead of relying solely on general recommendations, ModelMatch AI combines mod
 
 ### The Problem
 
-Choosing an LLM for a production application involves more than identifying the highest-performing model.
-
-Different use cases require different capabilities, and practical decisions must account for several competing factors:
-
-- **Model Quality:** How capable is the model overall?
-- **Task Relevance:** How well does its measured performance align with the intended application?
-- **Cost Efficiency:** What would the model cost under the expected workload?
-- **Operational Performance:** Does its observed latency and output speed fit the application's needs?
-- **Evidence Reliability:** Which claims are supported by available data, and which remain unverified?
-
-General-purpose LLMs can suggest models, but their recommendations may rely on previously learned information rather than newly retrieved, model-specific evidence.
+Choosing an LLM for a production application involves more than identifying the highest-performing model. Different use cases require different capabilities. General-purpose LLMs can suggest models, but their recommendations may rely on previously learned information rather than newly retrieved, model-specific evidence.
 
 ### Our Solution
 
@@ -75,9 +65,7 @@ The final report is assembled from validated selections and structured evidence,
 
 ModelMatch uses an interpretable composite score:
 
-[\
-S = \alpha G + (1-\alpha)U + O\
-]
+[S = \alpha G + (1-\alpha)U + O\]
 
 Where:
 
@@ -90,19 +78,12 @@ G and U retain their original index-point scales. The composite score is a **cus
 
 Users can adjust the weighting to explore how recommendations change without repeating the underlying research.
 
-Missing benchmark values are not replaced with fabricated scores or dataset averages.
-
-
 ---
 
 
 ## 3. Example Queries & Model Comparisons
 
 The following cases illustrate how ModelMatch AI approaches practical model selection problems.
-
-The Gemini baseline summaries are condensed from responses provided by the project author. They describe what Gemini recommended, but the underlying specifications and benchmark claims were not independently verified in those baseline responses.
-
-ModelMatch results are identified as either **recorded evaluation results** or **expected system behavior** where a complete historical response was not preserved.
 
 ### Case 1 — Financial Research Assistant
 
@@ -118,13 +99,7 @@ ModelMatch results are identified as either **recorded evaluation results** or *
 | **Quantitative Evidence** | Cites benchmark rankings and pricing claims without live tool verification                           | G = 64.6; U = 64.7; O = 0; **S = 64.67**                                                            |
 | **Evidence Limitations**  | Current accuracy of specifications is not established by the baseline                                | Flags unverified production specifications                 |
 
-**What ModelMatch Adds**
-
-Rather than selecting a model through general reasoning alone, ModelMatch produces a reproducible comparison using retrieved, task-relevant benchmark data.
-
-Its Financial analysis selected Claude Fable 5.2 as the highest-scoring candidate under the recorded snapshot and weighting. The current interface presents that Best Overall choice alongside Raw Ranking and any limited-evidence alternatives.
-
-**Expected Answer:** Identify the highest-scoring qualified Financial candidate based on available General Intelligence and Finance Capability evidence, with transparent scoring and limitations.
+**Expected Answer:** Rather than selecting a model through general reasoning alone, ModelMatch produces a reproducible comparison using retrieved, task-relevant benchmark data. It could identify the highest-scoring qualified Financial candidate based on available General Intelligence and Finance Capability evidence, with transparent scoring and limitations.
 
 **Evidence Source:** Artificial Analysis Free API, `GET /api/v2/language/models/free`; fields `evaluations.artificial_analysis_intelligence_index` and `evaluations.artificial_analysis_finance_and_accounting_index`.
 
@@ -146,7 +121,7 @@ Its Financial analysis selected Claude Fable 5.2 as the highest-scoring candidat
 | **Latency Analysis**     | Claims sub-second TTFT for preferred models                                  | Compares retrieved mean TTFT with the 2-second preference                               |
 | **Evidence Limitations** | Pricing and latency assumptions were not independently checked through tools | Separates measured data, estimates, unsupported task mappings, and missing metrics      |
 
-**What ModelMatch Adds**
+**Expected Answer:**
 
 ModelMatch turns an operationally constrained product question into a quantitative model comparison.
 
@@ -159,8 +134,6 @@ For the specified workload, it can calculate:
 - **Budget preference:** Estimated monthly cost below $300
 
 The system evaluates the tradeoff between task suitability, cost, and latency rather than relying exclusively on general model reputation.
-
-**Expected Answer:** Identify Best Overall when task-relevant evidence and workload-specific operational estimates support a qualified, fully scored model. Compare any other scored models in Raw Ranking.
 
 **Evidence Source:** Artificial Analysis Free API, `GET /api/v2/language/models/free`; fields `pricing.price_1m_input_tokens`, `pricing.price_1m_output_tokens`, and `performance_v3` mean latency/speed metrics.
 
@@ -182,15 +155,9 @@ The system evaluates the tradeoff between task suitability, cost, and latency ra
 | **Context Requirement**  | Claims all three models satisfy the 100K-token requirement              | Does not assume that a reported combined context window proves maximum input capacity     |
 | **Evidence Limitations** | Detailed provider specifications are asserted without live verification | Marks unsupported input-capacity requirements as **Unverified**, not satisfied            |
 
-**What ModelMatch Adds**
-
-This example highlights the importance of knowing when available data is insufficient.
-
-For legal applications, a model can demonstrate strong benchmark performance while still lacking verified evidence for a mandatory technical requirement.
+**Expected Answer:** 
 
 ModelMatch separates **model quality** from **deployment eligibility** and does not certify that a model satisfies a 100,000-token input requirement merely because its reported context window is large.
-
-**Expected Answer:** Identify legal capability evidence where available, but refrain from certifying deployment-ready recommendations until the mandatory input-capacity specification has been verified.
 
 **Evidence Source:** Artificial Analysis Free API, `GET /api/v2/language/models/free`; fields `evaluations.artificial_analysis_intelligence_index` and `evaluations.artificial_analysis_legal_index`. Verified input-capacity evidence would require appropriate official provider specifications.
 
@@ -208,18 +175,6 @@ ModelMatch AI uses the [Artificial Analysis](https://artificialanalysis.ai/) Fre
 
 **Data access:** `GET https://artificialanalysis.ai/api/v2/language/models/free`
 
-The backend retrieves paginated model records using a server-side API credential, preserves retrieval metadata, and associates evaluation fields with exact model IDs. No proprietary snapshot is required in the public repository to understand the data-loading process.
-
-| **Data Category**          | **Purpose**                        |
-| -------------------------- | ---------------------------------- |
-| General Intelligence Index | Overall model capability evidence  |
-| Capability Indices         | Task-relevant model performance    |
-| Input/Output Pricing       | API cost estimation                |
-| Mean TTFT                  | Response initiation performance    |
-| Mean Output Speed          | Generation throughput              |
-| Model Identity & Version   | Evidence matching and traceability |
-
-See the [Artificial Analysis API Documentation](https://artificialanalysis.ai/data-api/docs) and [Capability Index Methodology](https://artificialanalysis.ai/methodology/capability-indices).
 
 ### Evidence-Grounded Decisions
 
@@ -236,9 +191,9 @@ This separation prevents incomplete benchmark coverage from being silently treat
 ---
 
 
-## 5. Live Demo & Usage
+## 5. Deployment
 
-**Application:** [Launch ModelMatch AI](https://modelmatch-agent-git-978311583991.europe-west1.run.app/)
+**Application:** [ModelMatch AI](https://modelmatch-agent-git-978311583991.europe-west1.run.app/)
 
 ### How to Use
 
@@ -249,11 +204,6 @@ This separation prevents incomplete benchmark coverage from being silently treat
 5. Adjust the General Intelligence weight to examine how model selection changes.
 
 The interface includes Overview, Comparison, Evidence, and model-detail views.
-
-### API Compatibility
-
-ModelMatch provides a Project 1-compatible `/chat` endpoint.
-
 
 ---
 
