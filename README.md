@@ -65,7 +65,7 @@ The final report is assembled from validated selections and structured evidence,
 
 ModelMatch uses an interpretable composite score:
 
-[S = \alpha G + (1-\alpha)U + O\]
+$$S = \alpha G + (1-\alpha)U + O$$
 
 Where:
 
