@@ -4,7 +4,7 @@
   <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="theme-color" content="#0f766e">
   <title>ModelMatch AI — Model selection workspace</title>
-  <link rel="stylesheet" href="/modelmatch.css?v=phase6c-responsive-1">
+  <link rel="stylesheet" href="/modelmatch.css?v=best-overall-1">
 </head>
 <body>
 <a class="skip-link" href="#main">Skip to content</a>
@@ -60,9 +60,12 @@
         <div id="results" hidden>
           <div id="data-label" class="data-note"></div>
           <section class="panel weight-panel" aria-labelledby="weight-title"><div class="weight-intro"><p class="eyebrow">MAKE THE TRADEOFF YOURS</p><h2 id="weight-title">Balance intelligence and fit.</h2><p id="weight-source"></p><span id="weight-mode" class="badge neutral"></span></div><div class="weight-interaction"><div class="weight-values"><label for="alpha">General <strong id="alpha-value">—</strong></label><span>Use-case <strong id="use-case-value">—</strong></span></div><input id="alpha" type="range" min="0" max="1" step="0.01" value="0.6" disabled aria-describedby="weight-status"><div class="weight-bottom"><span id="weight-status" role="status" aria-live="polite">Adjust weights without rerunning research.</span><button id="reset" class="text-button" type="button" disabled>Reset to task default</button></div></div></section>
+          <div id="writer-stale" class="writer-note"></div>
           <section id="recommendation-coverage" class="panel coverage-panel" aria-label="Model evaluation coverage"></section>
-          <div class="results-heading"><div><h2 id="ranking-title">Recommended choices</h2><p id="ranking-subtitle"></p></div><span id="result-status" class="badge neutral"></span></div>
-          <div id="ranking" class="model-grid"></div><div id="writer-stale" class="writer-note"></div>
+          <section class="best-overall" aria-labelledby="ranking-title">
+            <div class="results-heading"><div><h2 id="ranking-title">Best Overall</h2><p id="ranking-subtitle" hidden></p></div><span id="result-status" class="badge neutral" hidden></span></div>
+            <div id="ranking"></div>
+          </section>
           <section id="potential-alternatives" class="panel alternatives-panel" aria-label="Potential alternatives with limited evidence"></section>
           <section class="panel raw-ranking-panel" aria-labelledby="raw-ranking-title"><div class="results-heading"><div><h2 id="raw-ranking-title">All models &amp; Raw Ranking</h2><p>Original engine order, without family deduplication or recommendation-role ordering.</p></div><label for="ranking-scope">Ranking weights <select id="ranking-scope"><option value="current">Current weights</option><option value="original">Original analysis</option></select></label></div><div id="raw-ranking"></div></section>
           <section class="candidate-section"><div class="results-heading"><div><h2>Candidate catalog</h2><p id="counts"></p></div></div><div id="candidate-groups"></div></section>
@@ -89,7 +92,7 @@
 <div id="compare-bar" class="compare-bar" hidden><span><strong id="selected-count">0</strong> of 3 models selected</span><button id="show-comparison" class="button button-primary button-small" type="button" disabled>Compare models ↔</button><button id="clear-selection" class="text-button" type="button">Clear</button></div>
 <dialog id="model-drawer" class="model-drawer" aria-labelledby="drawer-title"><div class="drawer-header"><span class="eyebrow">MODEL DETAILS</span><button id="close-drawer" class="icon-button" type="button" aria-label="Close model details">×</button></div><div id="drawer-content"></div></dialog>
 <div id="announcement" class="sr-only" role="status" aria-live="polite"></div>
-<script src="/recommendation-views.js?v=phase6c-responsive-1"></script>
-<script type="module" src="/modelmatch.js?v=phase6c-responsive-1"></script>
+<script src="/recommendation-views.js?v=best-overall-1"></script>
+<script type="module" src="/modelmatch.js?v=best-overall-1"></script>
 </body>
 </html>

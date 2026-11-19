@@ -196,9 +196,9 @@ function selectionControl(candidate) {
   label.append(input, el('span', '', 'Compare')); return label;
 }
 function modelTitle(candidate) { return button(candidate.name, () => openModel(candidate.model_id), 'model-title'); }
-function renderCard(candidate, index) {
+function renderCard(candidate) {
   const card = el('article', 'model-card'); card.dataset.modelId = candidate.model_id;
-  const top = el('div', 'card-topline'); top.append(el('span', 'rank-tag', state.selection ? pretty(Object.keys(state.selection.slots).find(role => state.selection.slots[role].candidate?.model_id === candidate.model_id) || 'recommendation') : `SHORTLIST ${String(index + 1).padStart(2, '0')}`), statusBadge(candidate));
+  const top = el('div', 'card-topline'); top.append(statusBadge(candidate));
   card.append(top, modelTitle(candidate));
   if (providerName(candidate)) card.append(el('p', 'provider-name', providerName(candidate)));
   const score = el('div', 'score-block'), caption = el('span', 'score-caption', 'Decision score S'); caption.append(el('span', '', 'Custom policy points'));
@@ -239,13 +239,12 @@ function updateWeightLabels(alpha) {
   $('alpha').value = alpha; $('alpha').style.setProperty('--alpha-fill', percent(alpha));
   $('alpha').setAttribute('aria-valuetext', `${percent(alpha)} general intelligence, ${percent(1 - alpha)} use-case fit`);
 }
-function recommendationRows(decision, selection, selector) {
-  if (selector?.status === 'unavailable') return [];
-  if (selection) return ['best_overall', 'lower_cost_alternative', 'different_family']
-    .map(role => selection.slots[role]).filter(slot => slot.status === 'selected')
-    .map(slot => decision.candidates[slot.candidate.model_id]);
-  const ranking = decision.rankings.fully_evaluable.length ? decision.rankings.fully_evaluable : decision.rankings.provisional;
-  return ranking.slice(0, 3).map(row => decision.candidates[row.model_id]);
+function bestOverallCandidate(decision, selection, selector) {
+  const slot = selection?.slots?.best_overall;
+  if (selector?.status === 'unavailable' || slot?.status !== 'selected') return null;
+  const candidate = decision.candidates[slot.candidate?.model_id];
+  return candidate?.eligibility === 'eligible' && [candidate.G, candidate.U, candidate.O, candidate.S].every(Number.isFinite)
+    ? candidate : null;
 }
 function recommendationViews(viewState = state) {
   return ModelMatchRecommendations.create({state: viewState, el, text, button, badge, number, pretty, statusBadge,
@@ -266,12 +265,17 @@ function renderDecision(decision) {
   $('alpha').disabled = $('reset').disabled = !state.analysisId || state.busy;
   text('weight-source', `${pretty(decision.weights.task_type)} · Suggested ${percent(decision.weights.suggested_alpha)} General / ${percent(1 - decision.weights.suggested_alpha)} Use-case.`);
   text('weight-mode', decision.weights.weight_mode === 'user_override' ? 'Custom weights' : 'Task default');
-  text('data-label', decision.data_mode === 'mock' ? 'SYNTHETIC DEMO · Fictional models and scores. Not real AA evaluations or purchasing advice.' : decision.catalog_complete ? 'Artificial Analysis evidence · Results are conditional on your requirements and available evidence.' : 'Limited catalog coverage · This shortlist is provisional and does not represent a complete market comparison.');
-  const top = state.selection && state.selector?.status !== 'unavailable' ? recommendationRows(decision, state.selection, state.selector) : [];
-  text('ranking-title', !state.selection || state.selector?.status === 'unavailable' ? 'Recommendation selection unavailable' : top.length ? decision.rankings.fully_evaluable.length ? 'Recommended choices' : 'Provisional recommended choices' : 'No supported numeric shortlist');
-  text('ranking-subtitle', !state.selection || state.selector?.status === 'unavailable' ? 'Raw Decision scores and evidence are retained below. No decision-oriented recommendation is claimed.' : `${decision.relevance.match_status === 'partial' ? 'The Capability Index is a partial proxy for this task.' : decision.relevance.match_status === 'strong' ? 'Choices use the selected task-relevant Capability Index.' : 'No supported task-relevant Capability Index is available.'} Validate task fit and operational tradeoffs in a representative pilot. Costs are workload estimates, not billing quotes.`);
-  text('result-status', top.length ? decision.rankings.fully_evaluable.length && decision.catalog_complete ? 'Evidence supported' : 'Provisional' : 'Further validation needed');
-  const views = recommendationViews(); views.renderSlots(); views.renderCoverage(); views.renderAlternatives(); views.renderRawRanking();
+  text('data-label', decision.data_mode === 'mock' ? 'SYNTHETIC DEMO · Fictional models and scores. Not real AA evaluations or purchasing advice.' : decision.catalog_complete ? 'Artificial Analysis evidence · Results are conditional on your requirements and available evidence.' : 'Limited catalog coverage · Results cover only the models evaluated in this analysis.');
+  const best = bestOverallCandidate(decision, state.selection, state.selector);
+  const subtitle = $('ranking-subtitle');
+  subtitle.textContent = best && decision.relevance.match_status === 'partial'
+    ? 'The Capability Index is a partial proxy for this task.' : '';
+  subtitle.hidden = !subtitle.textContent;
+  const status = $('result-status');
+  status.hidden = !best;
+  status.textContent = best ? (best.candidate_status === 'fully_evaluable' && decision.catalog_complete ? 'Evidence supported' : 'Provisional') : '';
+  const views = recommendationViews();
+  views.renderBestOverall(best); views.renderCoverage(); views.renderAlternatives(); views.renderRawRanking();
   const counts = decision.counts_before_shortlist;
   text('counts', `${counts.total} candidates before shortlist limits · ${counts.fully_evaluable} fully evaluable · ${counts.provisional} provisional · ${counts.unverified} unverified · ${counts.ineligible} ineligible`);
   renderGroups(new Set());
@@ -358,10 +362,11 @@ function renderOriginalSummary() {
   const original = state.original?.decision;
   if (!original) return;
   text('report-note', `${state.writerStale ? 'STALE: This report does not describe the current recommendation selection. ' : ''}Original weights: ${percent(original.weights.alpha)} General / ${percent(1 - original.weights.alpha)} Use-case. This summary remains tied to the original analysis. The complete, unchanged Writer report is in Technical Details.`);
-  const rows = recommendationRows(original, state.original.selection, state.original.selector);
-  const list = el('ul');
-  for (const row of rows) list.append(el('li', '', `${row.name} — original decision score ${number(row.S)}`));
-  $('report').replaceChildren(el('p', '', state.original.selector?.status === 'unavailable' ? 'Original recommendation selection was unavailable; raw Decision results are retained.' : rows.length ? 'Original shortlist, before any weight adjustments:' : 'The original analysis did not support a numeric shortlist.'), list,
+  const best = bestOverallCandidate(original, state.original.selection, state.original.selector);
+  const summary = best ? `Original Best Overall: ${best.name} · Decision score ${number(best.S)}`
+    : state.original.selector?.status === 'unavailable' ? 'Original recommendation selection was unavailable.'
+    : 'The original analysis did not produce a Best Overall recommendation.';
+  $('report').replaceChildren(el('p', '', summary),
     el('p', '', state.original.writer_status === 'skipped' ? 'The Selector was unavailable. No Writer generation occurred; raw Decision results remain available.' : state.original.writer_fallback ? 'The live Writer output was unavailable or rejected. The backend supplied a deterministic fallback report.' : 'The Writer output passed the backend ranking and evidence checks.'));
 }
 function renderTechnical() {

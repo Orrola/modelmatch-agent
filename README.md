@@ -32,17 +32,14 @@ ModelMatch AI transforms a natural-language product requirement into a structure
 
 The application provides:
 
-| **Feature**                     | **What It Provides**                                                                   |
-| ------------------------------- | -------------------------------------------------------------------------------------- |
-| **Best Overall**                | Highest-scoring qualified model under the available evidence                           |
-| **Lower-cost Alternative**      | A cheaper comparable option from a verified different model family, when available     |
-| **Different Family**            | An alternative from a distinct verified model family                                   |
-| **Model Score Breakdown**       | General Intelligence, Use-case Capability, Operational Adjustment, and Composite Score |
-| **Cost & Performance Analysis** | Estimated monthly token cost, mean latency, and output speed                           |
-| **Interactive Comparison**      | Adjustable weights and model-level comparisons                                         |
-| **Evidence Transparency**       | Data sources, model identifiers, missing metrics, and qualification status             |
+| **Feature** | **What It Provides** |
+| --- | --- |
+| **Best Overall Recommendation** | The highest-ranked qualified model in the supported scoring cohort, when a complete score is available |
+| **Ranked Model Comparison** | Raw Ranking with original and adjustable weights, plus side-by-side comparison of other scored models |
+| **Potential Alternatives — Limited Evidence** | Unranked models with a known general or task-specific index and an unavailable composite score |
+| **Evidence and Operational Tradeoffs** | G/U/O/S breakdown, estimated monthly token cost, mean latency, output speed, data sources, and qualification status |
 
-Recommendations are conditional on the available evidence. If a model's capabilities or required specifications cannot be verified, the system explicitly identifies the limitation instead of manufacturing a complete ranking.
+ModelMatch shows a Best Overall recommendation only when an eligible model has enough evidence for a complete score.
 
 ### Target Users
 
@@ -116,16 +113,16 @@ ModelMatch results are identified as either **recorded evaluation results** or *
 |                       | **Gemini Baseline**                                                                                  | **ModelMatch AI**                                                                                   |
 | ------------------------- | ---------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
 | **Best Overall**          | Claude Opus 5.5                                                                                      | **Claude Fable 5.2 (Max, Default Fallback)**                                                        |
-| **Alternatives**          | Gemini 4 Carbon, Claude Fable 5.2, and other models for specific use cases                           | Lower-cost and Different Family slots unavailable without verified family evidence                  |
+| **Other models**          | Gemini 4 Carbon, Claude Fable 5.2, and other models for specific use cases                           | Compare other scored models in Raw Ranking and inspect unranked models with partial evidence where available                  |
 | **Selection Basis**       | Financial reasoning, long-document capabilities, published benchmark claims, and cost considerations | Retrieved General Intelligence and Finance Capability indices, combined using a deterministic score |
 | **Quantitative Evidence** | Cites benchmark rankings and pricing claims without live tool verification                           | G = 64.6; U = 64.7; O = 0; **S = 64.67**                                                            |
-| **Evidence Limitations**  | Current accuracy of specifications is not established by the baseline                                | Explicitly reports missing family evidence and unverified production specifications                 |
+| **Evidence Limitations**  | Current accuracy of specifications is not established by the baseline                                | Flags unverified production specifications                 |
 
 **What ModelMatch Adds**
 
 Rather than selecting a model through general reasoning alone, ModelMatch produces a reproducible comparison using retrieved, task-relevant benchmark data.
 
-Its Financial analysis selected Claude Fable 5.2 as the highest-scoring candidate under the recorded snapshot and weighting. It did not invent alternative recommendations when the required family evidence was unavailable.
+Its Financial analysis selected Claude Fable 5.2 as the highest-scoring candidate under the recorded snapshot and weighting. The current interface presents that Best Overall choice alongside Raw Ranking and any limited-evidence alternatives.
 
 **Expected Answer:** Identify the highest-scoring qualified Financial candidate based on available General Intelligence and Finance Capability evidence, with transparent scoring and limitations.
 
@@ -144,7 +141,7 @@ Its Financial analysis selected Claude Fable 5.2 as the highest-scoring candidat
 |                      | **Gemini Baseline**                                                          | **ModelMatch AI — Expected Behavior**                                                   |
 | ------------------------ | ---------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
 | **Best Overall**         | Claude Haiku 5.5                                                             | Selects a qualified model only if sufficient task and operational evidence is available |
-| **Alternatives**         | GPT-6 Luna and Gemini models                                                 | Evaluates cheaper and different-family alternatives using comparable evidence           |
+| **Other models**         | GPT-6 Luna and Gemini models                                                 | Compare estimated cost and mean TTFT across scored models and inspect any limited-evidence alternatives           |
 | **Cost Analysis**        | Estimates $45/month for its preferred models using stated token prices       | Calculates monthly API cost from retrieved pricing and the specified workload           |
 | **Latency Analysis**     | Claims sub-second TTFT for preferred models                                  | Compares retrieved mean TTFT with the 2-second preference                               |
 | **Evidence Limitations** | Pricing and latency assumptions were not independently checked through tools | Separates measured data, estimates, unsupported task mappings, and missing metrics      |
@@ -163,7 +160,7 @@ For the specified workload, it can calculate:
 
 The system evaluates the tradeoff between task suitability, cost, and latency rather than relying exclusively on general model reputation.
 
-**Expected Answer:** Recommend candidates using available task-relevant evidence and workload-specific operational estimates, or explain why a reliable ranking is not supported.
+**Expected Answer:** Identify Best Overall when task-relevant evidence and workload-specific operational estimates support a qualified, fully scored model. Compare any other scored models in Raw Ranking.
 
 **Evidence Source:** Artificial Analysis Free API, `GET /api/v2/language/models/free`; fields `pricing.price_1m_input_tokens`, `pricing.price_1m_output_tokens`, and `performance_v3` mean latency/speed metrics.
 
@@ -180,7 +177,7 @@ The system evaluates the tradeoff between task suitability, cost, and latency ra
 |                      | **Gemini Baseline**                                                     | **ModelMatch AI — Expected Behavior**                                                     |
 | ------------------------ | ----------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
 | **Best Overall**         | Gemini 4 Carbon                                                         | No deployment-qualified recommendation without verified mandatory input-capacity evidence |
-| **Alternatives**         | Claude Opus 5.5 and GPT-6.1 Sol                                         | Alternatives remain conditional on evidence and eligibility                               |
+| **Other models**         | Claude Opus 5.5 and GPT-6.1 Sol                                         | Inspect limited-evidence models where available. Qualification still requires verified input capacity.                               |
 | **Selection Basis**      | Legal reasoning benchmarks, reported context limits, and pricing        | General Intelligence, Legal Capability, and explicit hard-constraint checks               |
 | **Context Requirement**  | Claims all three models satisfy the 100K-token requirement              | Does not assume that a reported combined context window proves maximum input capacity     |
 | **Evidence Limitations** | Detailed provider specifications are asserted without live verification | Marks unsupported input-capacity requirements as **Unverified**, not satisfied            |
@@ -267,7 +264,7 @@ ModelMatch AI is a decision-support system, not an independent LLM benchmarking 
 
 - **Incomplete Benchmark Coverage:** Not every model has available General Intelligence and task-specific Capability scores.
 - **Snapshot Dependence:** Model rankings and prices may change as source data is updated.
-- **Family Identification:** Some model families cannot be confirmed for a given data snapshot, limiting alternative recommendations.
+- **Family Identification:** Some model families cannot be confirmed for a given data snapshot, limiting the related configurations shown in model details.
 - **Operational Uncertainty:** Average latency does not guarantee tail latency or production service levels.
 - **Unverified Specifications:** Context capacity, deployment availability, and residency requirements may require independent official verification.
 - **Custom Decision Policy:** Composite scores and weighting choices represent a transparent selection heuristic, not a validated measure of real-world performance.

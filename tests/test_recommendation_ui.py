@@ -47,8 +47,8 @@ def presentation_fixtures():
                 snapshot["pages"][0]["data"].append(row)
         if key == "three":
             row = next(row for row in snapshot["pages"][0]["data"] if row["id"] == "d")
-            row["evaluations"]["artificial_analysis_intelligence_index"] = 92
-            row["evaluations"]["artificial_analysis_finance_and_accounting_index"] = 80
+            row["evaluations"]["artificial_analysis_intelligence_index"] = 97
+            row["evaluations"]["artificial_analysis_finance_and_accounting_index"] = 78
         metadata = build_identity_sidecar(snapshot, mapping=mapping)
         requirements = options.get("requirements", [OperationalRequirement("monthly_cost_usd")] if options.get("cost", True) else [])
         prepared = build_candidates(snapshot, RelevanceDecision("Synthetic UI test", "finance", options.get("match_status", "strong"), "Synthetic fixture proxy only."),
@@ -111,7 +111,7 @@ class IdentityPresentationTests(unittest.TestCase):
 
 class RecommendationViewTests(unittest.TestCase):
     @unittest.skipUnless(Path(JSC).is_file(), "JavaScriptCore is unavailable.")
-    def test_roles_coverage_alternatives_raw_rankings_identity_and_stale_narrative(self):
+    def test_best_overall_coverage_alternatives_raw_rankings_identity_and_stale_narrative(self):
         fixture = presentation_fixtures()
         source = "const fixtures=" + json.dumps(fixture) + ";\n" + (ROOT / "tests/recommendation_views_contract.js").read_text()
         with tempfile.TemporaryDirectory() as folder:

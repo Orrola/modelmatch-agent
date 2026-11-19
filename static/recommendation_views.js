@@ -3,22 +3,6 @@ globalThis.ModelMatchRecommendations = {
   create(api) {
     const {state, el, text, button, badge, number, pretty, modelTitle, statusBadge, selectionControl,
       missingFor, evidenceFor, metricLabel, reasonLabel, renderCard} = api;
-    const roles = ['best_overall', 'lower_cost_alternative', 'different_family'];
-    const titles = {best_overall: 'Best Overall', lower_cost_alternative: 'Lower-cost Alternative', different_family: 'Different Family'};
-    const reasons = {
-      highest_original_rank_in_cohort: 'Highest original rank among candidates in the supported scoring cohort.',
-      highest_original_rank_on_lower_cost_pareto_frontier: 'A lower-cost, non-dominated choice from a different curated family.',
-      highest_ranked_distinct_family_with_new_creator: 'Highest-ranked remaining curated family from another known creator.',
-      highest_ranked_distinct_family_same_creator_fallback: 'Highest-ranked remaining curated family; the creator is shared.',
-      no_eligible_scored_candidate: 'No eligible candidate has enough evidence for a numeric recommendation.',
-      best_overall_unavailable: 'A supported Best Overall choice is needed before this alternative can be selected.',
-      best_overall_family_unknown: 'The Best Overall family is unknown, so family diversity cannot be established.',
-      best_overall_comparable_cost_unavailable: 'Comparable cost needs a stated workload and compatible input/output pricing.',
-      no_strictly_lower_comparable_cost: 'No eligible scored candidate has a strictly lower, comparable estimated cost.',
-      no_distinct_curated_family_on_lower_cost_frontier: 'No lower-cost, non-dominated candidate with a distinct curated family is supported.',
-      no_remaining_distinct_curated_family: 'No additional distinct curated family is supported by the available evidence.',
-    };
-    function reason(code) { return reasons[code] || `Backend selection reason: ${pretty(code || 'not supplied')}.`; }
     function identity(decision = state.decision, source = state.modelIdentity, selection = state.selection) {
       if (!source || !source.models || !source.families || !decision || source.retrieved_at !== decision.retrieved_at || source.snapshot_id !== decision.snapshot_id || source.data_mode !== decision.data_mode
           || (selection && (source.snapshot_fingerprint !== selection.snapshot_fingerprint || source.mapping_version !== selection.mapping_version))) return null;
@@ -77,34 +61,35 @@ globalThis.ModelMatchRecommendations = {
       }
       return box;
     }
-    function renderSlots() {
-      const cards = [];
-      for (const role of roles) {
-        const slot = state.selection?.slots?.[role], candidate = slot?.status === 'selected' && state.decision.candidates[slot.candidate.model_id];
-        if (!candidate || state.selector?.status === 'unavailable') {
-          const card = el('article', 'model-card unavailable-slot'); card.dataset.role = role;
-          card.append(el('h3', '', titles[role]), badge('Unavailable', 'warning'), el('p', '', state.selector?.status === 'unavailable'
-            ? 'Recommendation selection failed. Raw scores and evidence remain available below.'
-            : !state.selection ? 'This response has no compatible recommendation selection. Inspect Raw Ranking; no role is inferred.' : reason(slot?.reason_code)));
-          cards.push(card); continue;
-        }
-        const card = renderCard(candidate, roles.indexOf(role)); card.dataset.role = role;
-        card.append(el('p', 'selection-reason', reason(slot.reason_code)));
-        const cost = evidenceFor(candidate).find(e => e.evidence_status === 'observed' && e.source_type === 'derived' && e.metric === 'monthly_cost_usd' && e.value === candidate.estimated_monthly_cost_usd);
-        if (cost) card.append(el('p', 'cost-label', `Estimated monthly token cost: $${number(cost.value)}`));
-        if (slot.candidate.family_status !== 'curated_aa_label') card.append(badge('Family unknown', 'warning'));
-        const facts = el('details', 'card-evidence-details');
-        facts.append(el('summary', '', 'Model information & evidence'), el('p', 'identity-line', identityLine(candidate.model_id)),
-          el('p', 'raw-rank', `${rawRank(candidate.model_id)} · AA ID: ${candidate.model_id}`), operational(candidate));
-        const gaps = missingFor(candidate.model_id);
-        if (gaps.length) facts.append(el('p', 'field-help', gaps.map(g => `${metricLabel(g.metric)}: ${reasonLabel(g.reason)}`).join(' · ')));
-        card.append(facts, familyConfigurations(candidate.model_id, true));
-        const actions = el('div', 'card-actions');
-        actions.append(button('View model details ↗', () => api.openRawModel(candidate, state.decision, state.modelIdentity)), selectionControl(candidate));
-        card.append(actions); cards.push(card);
+    function renderBestOverall(candidate) {
+      const panel = document.getElementById('ranking');
+      panel.dataset.count = candidate ? '1' : '0';
+      if (!candidate) {
+        const message = state.selector?.status === 'unavailable'
+          ? 'Recommendation selection failed. Raw scores and evidence remain available below.'
+          : !state.selection
+            ? 'This analysis has no recommendation selection. Review the available scores in Raw Ranking.'
+            : 'No eligible model has a complete decision score. See Model Evaluation Coverage for scoring blockers.';
+        panel.replaceChildren(el('p', 'recommendation-empty', message));
+        return;
       }
-      document.getElementById('ranking').replaceChildren(...cards);
-      document.getElementById('ranking').dataset.count = String(cards.filter(c => !c.className.includes('unavailable-slot')).length);
+      const slot = state.selection.slots.best_overall;
+      const card = renderCard(candidate);
+      card.dataset.role = 'best_overall';
+      card.append(el('p', 'selection-reason', 'Highest-ranked qualified model in the supported scoring cohort.'));
+      const cost = evidenceFor(candidate).find(e => e.evidence_status === 'observed' && e.source_type === 'derived' && e.metric === 'monthly_cost_usd' && e.value === candidate.estimated_monthly_cost_usd);
+      if (cost) card.append(el('p', 'cost-label', `Estimated monthly token cost: $${number(cost.value)}`));
+      if (slot.candidate.family_status !== 'curated_aa_label') card.append(badge('Family unknown', 'warning'));
+      const facts = el('details', 'card-evidence-details');
+      facts.append(el('summary', '', 'Model information & evidence'), el('p', 'identity-line', identityLine(candidate.model_id)),
+        el('p', 'raw-rank', `${rawRank(candidate.model_id)} · AA ID: ${candidate.model_id}`), operational(candidate));
+      const gaps = missingFor(candidate.model_id);
+      if (gaps.length) facts.append(el('p', 'field-help', gaps.map(g => `${metricLabel(g.metric)}: ${reasonLabel(g.reason)}`).join(' · ')));
+      card.append(facts, familyConfigurations(candidate.model_id, true));
+      const actions = el('div', 'card-actions');
+      actions.append(button('View model details ↗', () => api.openRawModel(candidate, state.decision, state.modelIdentity)), selectionControl(candidate));
+      card.append(actions);
+      panel.replaceChildren(card);
     }
     function scoreCoverage() {
       // Tally existing backend blockers; never infer why a score should or should not exist.
@@ -156,7 +141,6 @@ globalThis.ModelMatchRecommendations = {
       detail.append(el('p', 'field-help', source ? `Snapshot ${source.snapshot_id} · Mapping ${source.mapping_version} · Retrieved ${source.retrieved_at || 'unknown'}` : 'Compatible identity metadata is unavailable. No historical family mapping is inferred.'));
       panel.append(detail);
       if (source && Object.values(source.models).some(m => m.family_status === 'unknown_mapping_snapshot_mismatch')) panel.append(el('p', 'mapping-warning', 'Historical family mappings do not match this snapshot. Affected families remain unknown.'));
-      if (!state.selection || state.selector?.status === 'unavailable') panel.append(el('p', 'mapping-warning', 'Selector unavailable or absent. Raw evaluation information is retained; no decision-oriented recommendation is claimed.'));
     }
     function renderAlternatives() {
       const panel = document.getElementById('potential-alternatives'), potential = state.selection?.potential_alternatives;
@@ -226,6 +210,6 @@ globalThis.ModelMatchRecommendations = {
         panel.append(block);
       }
     }
-    return {renderSlots, renderCoverage, scoreCoverage, renderAlternatives, renderRawRanking, identityLine, familyConfigurations, rawRank, metadata, reason};
+    return {renderBestOverall, renderCoverage, scoreCoverage, renderAlternatives, renderRawRanking, identityLine, familyConfigurations, rawRank, metadata};
   },
 };

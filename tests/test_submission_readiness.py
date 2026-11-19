@@ -5,6 +5,7 @@ import json
 import shlex
 import unittest
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from scripts.submission_audit import CJK, SECRET_PATTERNS, private_path
 
@@ -16,7 +17,7 @@ class SubmissionReadinessTests(unittest.TestCase):
         for name in (".env", ".env.local", ".cache/screenshot.png", "docs/PRD.md", ".venv/bin/python",
                      "local-service-account.json", "application_default_credentials.json", "key.pem"):
             self.assertTrue(private_path(name), name)
-        for name in (".env.example", "tests/fixtures/aa_free_mock.json", "examples/offline-aa.json", "submission.example.json"):
+        for name in (".env.example", "tests/fixtures/aa_free_mock.json", "examples/offline-aa.json", "submission.json"):
             self.assertFalse(private_path(name), name)
 
     def test_audit_patterns_identify_secrets_without_embedding_real_credentials(self):
@@ -55,13 +56,20 @@ class SubmissionReadinessTests(unittest.TestCase):
             for forbidden in (".env", ".cache", "docs", "tests"):
                 self.assertIn(forbidden, text)
 
-    def test_submission_example_does_not_invent_authors_or_deployed_url(self):
-        manifest = json.loads((ROOT / "submission.example.json").read_text())
-        self.assertIsNone(manifest["deploy_url"])
-        self.assertEqual(manifest["authors"], [])
+    def test_submission_manifest_has_required_fields(self):
+        manifest = json.loads((ROOT / "submission.json").read_text())
+        self.assertIsInstance(manifest, dict)
+        self.assertTrue({"deploy_url", "authors", "path"}.issubset(manifest))
+        self.assertIsInstance(manifest["deploy_url"], str)
+        url = urlsplit(manifest["deploy_url"])
+        self.assertEqual(url.scheme, "https")
+        self.assertTrue(url.hostname)
+        self.assertIsNone(url.username)
+        self.assertIsNone(url.password)
+        self.assertIsInstance(manifest["authors"], list)
+        self.assertTrue(manifest["authors"])
+        self.assertTrue(all(isinstance(author, str) and author.strip() for author in manifest["authors"]))
         self.assertEqual(manifest["path"], "research")
-        self.assertIn("reported", (ROOT / "README.md").read_text())
-        self.assertIn("writer_fallback=true", (ROOT / "README.md").read_text())
 
     def test_container_installer_is_pinned_and_live_mode_is_explicit(self):
         docker = (ROOT / "Dockerfile").read_text()

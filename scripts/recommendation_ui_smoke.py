@@ -88,12 +88,15 @@ def main():
                 }
                 return window.originalFetch(url,options);
               };""")
-            for name, count in (("three", 3), ("two", 2), ("one", 1), ("zero", 0), ("failure", 0), ("states", 2), ("policy", 0), ("partial", 3)):
+            for name, count in (("three", 1), ("two", 1), ("one", 1), ("zero", 0), ("failure", 0), ("states", 1), ("policy", 0), ("partial", 1)):
                 browser.evaluate("window.fixtureName=" + json.dumps(name))
                 browser.fill("#question", "Synthetic financial fixture rendering only.")
                 browser.click("#analyze")
                 browser.wait("!document.getElementById('analyze').disabled && !document.getElementById('results').hidden")
-                check(f"{name}: three honest slots, {count} selected", browser.evaluate(f"document.querySelectorAll('#ranking>article').length===3 && Number(document.getElementById('ranking').dataset.count)==={count}"))
+                check(f"{name}: one Best Overall card or compact message", browser.evaluate(
+                    f"document.querySelectorAll('#ranking>*').length===1 && "
+                    f"document.querySelectorAll('#ranking>article[data-role=best_overall]').length==={count} && "
+                    f"document.querySelectorAll('#ranking>.recommendation-empty').length==={1 - count}"))
                 check(f"{name}: evaluation coverage title and three primary metrics", browser.evaluate("document.getElementById('recommendation-coverage').querySelector('h2').textContent==='Model Evaluation Coverage' && document.querySelectorAll('.coverage-primary>div').length===3 && !document.querySelector('.coverage-secondary').open"))
                 check(f"{name}: no empty family expander", browser.evaluate("Array.from(document.querySelectorAll('.family-configurations summary')).every(e=>!e.textContent.includes('(0)'))"))
                 check(f"{name}: no expanded empty status panels", browser.evaluate("Array.from(document.querySelectorAll('.empty-alternative-buckets')).every(e=>!e.open)"))
@@ -104,35 +107,39 @@ def main():
                     check("Policy-only blocking is not reported as missing G/U", browser.evaluate("Array.from(document.querySelectorAll('.coverage-primary dd')).map(e=>e.textContent).join(',')==='6,0,0' && document.querySelector('.coverage-other').textContent.includes('6 additional')"))
                 if name == "partial":
                     check("Partial-proxy caveat appears near heading only", browser.evaluate("document.getElementById('ranking-subtitle').textContent.includes('partial proxy') && !document.getElementById('ranking').textContent.includes('partial proxy')"))
-                check(f"{name}: desktop three equal-width columns", browser.evaluate("(()=>{const cards=Array.from(document.querySelectorAll('#ranking>article')).map(e=>e.getBoundingClientRect());return cards.length===3 && Math.abs(cards[0].top-cards[2].top)<1 && Math.abs(cards[0].width-cards[2].width)<1;})()"))
-                check(f"{name}: fixed recommendation role order", browser.evaluate("Array.from(document.querySelectorAll('#ranking>article')).map(e=>e.dataset.role).join(',')==='best_overall,lower_cost_alternative,different_family'"))
+                check(f"{name}: bounded recommendation with alternatives immediately below", browser.evaluate(
+                    "document.querySelector('.best-overall').getBoundingClientRect().width<=640 && "
+                    "document.querySelector('.best-overall').nextElementSibling.id==='potential-alternatives'"))
                 check(f"{name}: readable alternative headings", browser.evaluate("document.getElementById('potential-alternatives').textContent.includes('Task-specific score available') || !document.getElementById('potential-alternatives').textContent.includes('Backend order:')"))
                 browser.screenshot(f"desktop-{name}.png", True); report["screenshots"].append(f"desktop-{name}.png")
             browser.evaluate("window.fixtureName='three'")
-            browser.click("#analyze"); browser.wait("document.getElementById('ranking').dataset.count==='3' && !document.getElementById('analyze').disabled")
+            browser.click("#analyze"); browser.wait("document.getElementById('ranking').dataset.count==='1' && !document.getElementById('analyze').disabled")
             browser.click(".family-configurations summary")
             check("Explicit other configuration expands", browser.evaluate("document.querySelector('.family-configurations').open && document.querySelector('.configuration-row').textContent.includes('(b)')"))
-            browser.click("#ranking>article:nth-child(2) .model-title")
-            check("No empty family expander in model drawer", browser.evaluate("document.getElementById('model-drawer').open && document.querySelectorAll('#drawer-content .family-configurations').length===0"))
+            browser.click("#raw-ranking .raw-ranking-group summary")
+            browser.click("#raw-ranking .raw-ranking-row:nth-of-type(3) .model-title")
+            check("No empty family expander in model drawer", browser.evaluate("document.getElementById('model-drawer').open && document.querySelector('#drawer-content .technical-panel pre').textContent.includes('\"aa_model_id\": \"c\"') && document.querySelectorAll('#drawer-content .family-configurations').length===0"))
             browser.click("#close-drawer")
             browser.fill("#alpha", ".7")
             browser.wait("document.getElementById('alpha-value').textContent==='70%' && document.getElementById('weight-status').textContent.startsWith('Updated')")
             check("Recalculation marks narrative stale", browser.evaluate("window.recalcCount===1 && document.getElementById('writer-stale').textContent.includes('has not been regenerated')"))
-            check("Recalculation refreshes canonical role IDs", browser.evaluate("Array.from(document.querySelectorAll('#ranking>article')).map(e=>e.dataset.modelId).join(',')==='a,d,c'"))
+            check("Recalculation updates Best Overall", browser.evaluate("document.querySelector('#ranking>article').dataset.modelId==='d'"))
             browser.screenshot("desktop-adjusted.png", True); report["screenshots"].append("desktop-adjusted.png")
             browser.click("#reset")
             browser.wait("document.getElementById('alpha-value').textContent==='60%' && document.getElementById('weight-status').textContent.startsWith('Updated')")
-            check("Reset uses the existing engine fallback default", browser.evaluate("window.recalcCount===2 && document.getElementById('ranking').dataset.count==='3'"))
-            for width, columns in ((1024, 3), (834, 2), (390, 1)):
+            check("Reset uses the existing engine fallback default", browser.evaluate("window.recalcCount===2 && document.querySelector('#ranking>article').dataset.modelId==='a'"))
+            for width in (1024, 834, 390):
                 browser.viewport(width, 1000)
-                check(f"Width {width}: expected {columns} grid columns", browser.evaluate(f"getComputedStyle(document.getElementById('ranking')).gridTemplateColumns.split(' ').length==={columns}"))
+                check(f"Width {width}: single card fits its section", browser.evaluate(
+                    "document.querySelector('#ranking>article').getBoundingClientRect().width === "
+                    "document.querySelector('.best-overall').getBoundingClientRect().width"))
                 check(f"Width {width}: card content does not overflow", browser.evaluate("Array.from(document.querySelectorAll('#ranking>article')).every(e=>e.scrollWidth<=e.clientWidth+1)"))
                 check(f"Width {width}: no page overflow", browser.evaluate("document.documentElement.scrollWidth<=innerWidth+1"))
                 browser.screenshot(f"comparison-{width}.png", True); report["screenshots"].append(f"comparison-{width}.png")
-            browser.click(".model-card .model-title")
+            browser.click("#ranking .model-title")
             check("Mobile detail drawer retains evidence", browser.evaluate("document.getElementById('model-drawer').open && document.getElementById('drawer-content').textContent.includes('Synthetic fixture')"))
             browser.screenshot("mobile-details.png"); report["screenshots"].append("mobile-details.png")
-            check("No application analysis request reached HTTP", not any('/api/modelmatch/analyze' in url for url in browser.requests))
+            check("No application analysis or recalculation request reached HTTP", not any('/api/modelmatch/analyze' in url or '/api/modelmatch/recalculate' in url for url in browser.requests))
             check("No observed JavaScript exceptions", not browser.errors)
             report["status"] = "passed"
     except Exception as error:
